@@ -24,7 +24,8 @@ func (b *Broker) Subscribe(channelID string) chan string {
 	return ch
 }
 
-// Unsubscribe removes a subscriber and closes its channel.
+// Unsubscribe removes a subscriber without closing its channel.
+// The channel gets garbage collected when the subscriber exits.
 func (b *Broker) Unsubscribe(channelID string, sub chan string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -32,7 +33,6 @@ func (b *Broker) Unsubscribe(channelID string, sub chan string) {
 	for i, s := range subs {
 		if s == sub {
 			b.subscribers[channelID] = append(subs[:i], subs[i+1:]...)
-			close(s)
 			return
 		}
 	}

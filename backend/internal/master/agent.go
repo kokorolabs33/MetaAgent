@@ -55,8 +55,7 @@ type Agent struct {
 
 // Run executes the full master agent pipeline for a task.
 // Must be called in a goroutine — it blocks until the task completes.
-func (a *Agent) Run(taskID string, description string) {
-	ctx := context.Background()
+func (a *Agent) Run(ctx context.Context, taskID string, description string) {
 
 	// Update task to running
 	if _, err := a.DB.ExecContext(ctx, `UPDATE tasks SET status='running' WHERE id=$1`, taskID); err != nil {
@@ -132,7 +131,8 @@ func (a *Agent) Run(taskID string, description string) {
 		agentMap[ag.ID] = ag
 	}
 	for _, st := range plan.SubTasks {
-		if _, ok := agentMap[st.AgentID]; !ok {
+		ag, ok := agentMap[st.AgentID]
+		if !ok {
 			continue
 		}
 		if _, err := a.DB.ExecContext(ctx,
@@ -142,7 +142,7 @@ func (a *Agent) Run(taskID string, description string) {
 			log.Printf("master: add agent to channel: %v", err)
 		}
 		a.Broker.Publish(channelID, "agent_joined", map[string]any{
-			"agent_id": st.AgentID, "agent_name": st.AgentName,
+			"agent_id": ag.ID, "agent_name": ag.Name,
 		})
 	}
 
