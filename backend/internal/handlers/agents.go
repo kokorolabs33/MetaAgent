@@ -34,6 +34,10 @@ func (h *AgentHandler) List(w http.ResponseWriter, r *http.Request) {
 		a.Capabilities = models.JSONToCapabilities(caps)
 		agents = append(agents, a)
 	}
+	if err := rows.Err(); err != nil {
+		jsonError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	jsonOK(w, agents)
 }
 

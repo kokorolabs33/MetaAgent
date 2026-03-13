@@ -51,6 +51,10 @@ func (h *ChannelHandler) Get(w http.ResponseWriter, r *http.Request) {
 		}
 		messages = append(messages, m)
 	}
+	if err := rows.Err(); err != nil {
+		jsonError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 
 	agentRows, err := h.DB.QueryContext(r.Context(),
 		`SELECT channel_id, agent_id, status FROM channel_agents WHERE channel_id = $1`, id)
@@ -68,6 +72,10 @@ func (h *ChannelHandler) Get(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		agents = append(agents, ca)
+	}
+	if err := agentRows.Err(); err != nil {
+		jsonError(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
 
 	jsonOK(w, ChannelDetail{Channel: ch, Messages: messages, Agents: agents})

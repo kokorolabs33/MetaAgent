@@ -33,6 +33,10 @@ func (h *TaskHandler) List(w http.ResponseWriter, r *http.Request) {
 		}
 		tasks = append(tasks, t)
 	}
+	if err := rows.Err(); err != nil {
+		jsonError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	jsonOK(w, tasks)
 }
 
@@ -85,8 +89,8 @@ func (h *TaskHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Title == "" {
 		req.Title = req.Description
-		if len(req.Title) > 80 {
-			req.Title = req.Title[:80] + "..."
+		if len([]rune(req.Title)) > 80 {
+			req.Title = string([]rune(req.Title)[:80]) + "..."
 		}
 	}
 
