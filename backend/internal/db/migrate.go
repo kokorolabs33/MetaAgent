@@ -2,18 +2,15 @@ package db
 
 import (
 	"database/sql"
+	"embed"
 	"fmt"
-	"os"
-	"path/filepath"
-	"runtime"
 )
 
-func RunMigrations(db *sql.DB) error {
-	_, filename, _, _ := runtime.Caller(0)
-	// migrations dir is 2 levels up from internal/db/migrate.go
-	migrationsDir := filepath.Join(filepath.Dir(filename), "..", "..", "migrations")
+//go:embed migrations
+var migrationsFS embed.FS
 
-	sql, err := os.ReadFile(filepath.Join(migrationsDir, "001_init.sql"))
+func RunMigrations(db *sql.DB) error {
+	sql, err := migrationsFS.ReadFile("migrations/001_init.sql")
 	if err != nil {
 		return fmt.Errorf("read migration: %w", err)
 	}

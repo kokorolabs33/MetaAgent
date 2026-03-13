@@ -42,17 +42,11 @@ var defaultAgents = []models.Agent{
 
 func Run(ctx context.Context, db *sql.DB) error {
 	for _, a := range defaultAgents {
-		var exists bool
-		err := db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM agents WHERE name = $1)`, a.Name).Scan(&exists)
-		if err != nil {
-			return err
-		}
-		if exists {
-			continue
-		}
 		a.ID = uuid.New().String()
-		_, err = db.ExecContext(ctx,
-			`INSERT INTO agents (id, name, description, system_prompt, capabilities, color) VALUES ($1, $2, $3, $4, $5, $6)`,
+		_, err := db.ExecContext(ctx,
+			`INSERT INTO agents (id, name, description, system_prompt, capabilities, color)
+			 VALUES ($1, $2, $3, $4, $5, $6)
+			 ON CONFLICT (name) DO NOTHING`,
 			a.ID, a.Name, a.Description, a.SystemPrompt, models.CapabilitiesToJSON(a.Capabilities), a.Color,
 		)
 		if err != nil {
