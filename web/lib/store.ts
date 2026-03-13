@@ -68,25 +68,28 @@ export const useTaskHubStore = create<TaskHubStore>((set, get) => ({
     const { sseDisconnect } = get();
     if (sseDisconnect) sseDisconnect();
 
-    // Load channel detail first
+    set({ channelId });
+
+    // First fetch snapshot, THEN connect SSE so we don't race with catchup events
     api.channels.get(channelId).then((detail) => {
       set({
         currentChannel: detail.channel,
         messages: detail.messages,
         channelAgents: detail.agents,
-        channelId,
         isLoading: false,
       });
+
+      // Connect SSE only after we have the snapshot — catchup events from backend
+      // will overlap with snapshot but handleSSEEvent handles idempotently
+      const disconnect = connectSSE(
+        api.channels.streamUrl(channelId),
+        get().handleSSEEvent
+      );
+      set({ sseDisconnect: disconnect });
     }).catch((e) => {
       console.error("connectToChannel: channel fetch failed:", e);
       set({ isLoading: false });
     });
-
-    const disconnect = connectSSE(
-      api.channels.streamUrl(channelId),
-      get().handleSSEEvent
-    );
-    set({ sseDisconnect: disconnect });
   },
 
   handleSSEEvent: (event: SSEEvent) => {
