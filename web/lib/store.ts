@@ -77,6 +77,9 @@ export const useTaskHubStore = create<TaskHubStore>((set, get) => ({
         channelId,
         isLoading: false,
       });
+    }).catch((e) => {
+      console.error("connectToChannel: channel fetch failed:", e);
+      set({ isLoading: false });
     });
 
     const disconnect = connectSSE(
@@ -88,6 +91,10 @@ export const useTaskHubStore = create<TaskHubStore>((set, get) => ({
 
   handleSSEEvent: (event: SSEEvent) => {
     switch (event.type) {
+      case "task_started": {
+        // Task is now running — backend will send channel_created shortly
+        break;
+      }
       case "channel_created": {
         const data = event.data as { channel_id: string };
         api.channels.get(data.channel_id).then((detail) => {
@@ -102,6 +109,7 @@ export const useTaskHubStore = create<TaskHubStore>((set, get) => ({
       case "agent_joined": {
         const data = event.data as { agent_id: string; agent_name: string };
         set((state) => {
+          if (!state.channelId) return state;
           const exists = state.channelAgents.some(
             (ca) => ca.agent_id === data.agent_id
           );
@@ -110,7 +118,7 @@ export const useTaskHubStore = create<TaskHubStore>((set, get) => ({
             channelAgents: [
               ...state.channelAgents,
               {
-                channel_id: state.channelId ?? "",
+                channel_id: state.channelId,
                 agent_id: data.agent_id,
                 status: "idle" as const,
               },
