@@ -6,10 +6,12 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"taskhub/internal/models"
+	"taskhub/internal/sse"
 )
 
 type ChannelHandler struct {
-	DB *sql.DB
+	DB     *sql.DB
+	Broker *sse.Broker
 }
 
 type ChannelDetail struct {
@@ -79,4 +81,35 @@ func (h *ChannelHandler) Get(w http.ResponseWriter, r *http.Request) {
 	}
 
 	jsonOK(w, ChannelDetail{Channel: ch, Messages: messages, Agents: agents})
+}
+
+func (h *ChannelHandler) Stream(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "SSE not supported", http.StatusInternalServerError)
+		return
+	}
+
+	ch := h.Broker.Subscribe(id)
+	defer h.Broker.Unsubscribe(id, ch)
+
+	for {
+		select {
+		case event, ok := <-ch:
+			if !ok {
+				return
+			}
+			_, _ = w.Write([]byte("data: " + event + "\n\n"))
+			flusher.Flush()
+		case <-r.Context().Done():
+			return
+		}
+	}
 }

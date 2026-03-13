@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"net/http"
@@ -8,11 +9,13 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"taskhub/internal/master"
 	"taskhub/internal/models"
 )
 
 type TaskHandler struct {
-	DB *sql.DB
+	DB     *sql.DB
+	Master *master.Agent
 }
 
 func (h *TaskHandler) List(w http.ResponseWriter, r *http.Request) {
@@ -110,8 +113,8 @@ func (h *TaskHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Master agent will be triggered by main.go after this handler returns
-	// For now just return the task — the Master field will be wired in a later task
+	go h.Master.Run(context.Background(), t.ID, t.Description)
+
 	w.WriteHeader(http.StatusCreated)
 	jsonOK(w, t)
 }
