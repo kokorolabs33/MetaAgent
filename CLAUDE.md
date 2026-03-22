@@ -17,38 +17,59 @@ Go code lives at the project root (standard Go layout); frontend lives in `web/`
 
 ```
 taskhub/
-├── cmd/server/main.go          # Entry point
-├── internal/                   # Go internal packages
-│   ├── config/                 # Env-based configuration
-│   ├── db/                     # Database connection + migrations
-│   │   └── migrations/         # Embedded SQL migration files
-│   ├── models/                 # Domain structs (Agent, Task, Channel, Message)
-│   ├── handlers/               # HTTP handlers (agents, tasks, channels, chat)
-│   ├── master/                 # Master Agent orchestration
-│   ├── openai/                 # LLM client wrapper
-│   ├── sse/                    # Server-Sent Events broker
-│   ├── audit/                  # Audit logging (token/cost tracking)
-│   └── seed/                   # Default agent seeding
-├── web/                        # Next.js 15 frontend (React 19 + Tailwind 4)
-│   ├── app/                    # Next.js app router
-│   ├── components/             # UI components
-│   │   ├── task/               # TaskBar, TaskList
-│   │   ├── channel/            # ChannelPanel, DocumentViewer, MessageFeed
-│   │   ├── topology/           # AgentTopology (React Flow)
-│   │   ├── chat/               # MasterChatModal
-│   │   └── ui/                 # shadcn/ui base components
-│   └── lib/                    # Shared utilities
-│       ├── types.ts            # TypeScript interfaces (mirrors Go models)
-│       ├── api.ts              # Typed API client
-│       ├── sse.ts              # SSE event handler
-│       └── store.ts            # Zustand state management
+├── cmd/
+│   ├── server/main.go             # Platform API server
+│   ├── mockagent/main.go          # Mock Agent for testing
+│   └── llmagent/main.go           # Real LLM Agent (manual testing)
+├── internal/
+│   ├── config/                    # Environment configuration
+│   ├── db/                        # Database connection + migrations
+│   │   └── migrations/            # Embedded SQL migration files
+│   ├── models/                    # Domain structs
+│   ├── handlers/                  # HTTP handlers
+│   ├── orchestrator/              # Task decomposition via LLM
+│   ├── executor/                  # DAG execution engine + poll manager
+│   ├── adapter/                   # Agent adapter layer
+│   │   ├── adapter.go             # Interface
+│   │   ├── http_poll.go           # HTTP polling adapter
+│   │   └── native.go             # Native protocol adapter
+│   ├── auth/                      # Authentication middleware
+│   ├── rbac/                      # Permission checking
+│   ├── ctxutil/                   # Context value helpers (user, org, role)
+│   ├── httputil/                  # HTTP response helpers (JSON, errors)
+│   ├── events/                    # Event store + SSE broker
+│   ├── audit/                     # Audit logging
+│   └── testutil/                  # Test infrastructure
+├── web/                           # Next.js frontend
+│   ├── app/
+│   │   ├── page.tsx               # Dashboard
+│   │   ├── tasks/[id]/page.tsx    # Task detail (DAG + Chat)
+│   │   ├── agents/page.tsx        # Agent list
+│   │   ├── agents/[id]/page.tsx   # Agent detail
+│   │   └── agents/register/page.tsx # Register agent wizard
+│   ├── components/
+│   │   ├── dashboard/             # Task cards, filters
+│   │   ├── task/                  # DAG view, status nodes
+│   │   ├── chat/                  # Group chat, message feed
+│   │   ├── agent/                 # Agent cards, config forms
+│   │   └── ui/                    # shadcn/ui base components
+│   └── lib/
+│       ├── types.ts               # TypeScript interfaces
+│       ├── api.ts                 # Typed API client
+│       ├── sse.ts                 # SSE connection manager
+│       └── store.ts              # Zustand stores
 ├── go.mod
 ├── go.sum
-├── Makefile                    # Unified build commands
-├── Dockerfile                  # Multi-stage container build
-├── .golangci.yml               # Go linter config
-├── .pre-commit-config.yaml     # Pre-commit hooks
-└── docs/                       # Planning docs
+├── Makefile
+├── Dockerfile
+├── CLAUDE.md
+├── SECURITY.md
+├── .golangci.yml
+├── .pre-commit-config.yaml
+└── .github/
+    ├── workflows/ci.yml
+    ├── pull_request_template.md
+    └── ISSUE_TEMPLATE/
 ```
 
 ## Architecture
