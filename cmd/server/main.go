@@ -48,6 +48,7 @@ func main() {
 	// Handlers
 	orgH := &handlers.OrgHandler{DB: pool}
 	memberH := &handlers.MemberHandler{DB: pool}
+	agentH := &handlers.AgentHandler{DB: pool}
 
 	// Router
 	r := chi.NewRouter()
@@ -90,7 +91,14 @@ func main() {
 			r.With(rbac.RequireRole("admin")).Put("/members/{uid}", memberH.UpdateRole)
 			r.With(rbac.RequireRole("admin")).Delete("/members/{uid}", memberH.Remove)
 
-			// TODO: agent routes
+			// Agents
+			r.Get("/agents", agentH.List)
+			r.With(rbac.RequireRole("admin")).Post("/agents", agentH.Create)
+			r.Get("/agents/{id}", agentH.Get)
+			r.With(rbac.RequireRole("admin")).Put("/agents/{id}", agentH.Update)
+			r.With(rbac.RequireRole("admin")).Delete("/agents/{id}", agentH.Delete)
+			r.Post("/agents/{id}/healthcheck", agentH.Healthcheck)
+
 			// TODO: task routes
 		})
 	})
