@@ -1,38 +1,63 @@
-import type { Agent, ChannelDetail, Task } from "./types";
+import type { Organization, OrgListItem, OrgMemberWithUser } from "./types";
 
-const BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8090";
+const BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8080";
 
 async function get<T>(path: string): Promise<T> {
-  const res = await fetch(`${BASE}${path}`);
-  if (!res.ok) throw new Error(`GET ${path} → ${res.status}`);
-  return res.json();
+  const res = await fetch(`${BASE}${path}`, { credentials: "include" });
+  if (!res.ok) throw new Error(`GET ${path} -> ${res.status}`);
+  return res.json() as Promise<T>;
 }
 
 async function post<T>(path: string, body: unknown): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
+    credentials: "include",
     body: JSON.stringify(body),
   });
-  if (!res.ok) throw new Error(`POST ${path} → ${res.status}`);
-  return res.json();
+  if (!res.ok) throw new Error(`POST ${path} -> ${res.status}`);
+  return res.json() as Promise<T>;
+}
+
+async function put<T>(path: string, body: unknown): Promise<T> {
+  const res = await fetch(`${BASE}${path}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`PUT ${path} -> ${res.status}`);
+  return res.json() as Promise<T>;
+}
+
+async function del(path: string): Promise<void> {
+  const res = await fetch(`${BASE}${path}`, {
+    method: "DELETE",
+    credentials: "include",
+  });
+  if (!res.ok) throw new Error(`DELETE ${path} -> ${res.status}`);
 }
 
 export const api = {
-  agents: {
-    list: () => get<Agent[]>("/api/agents"),
-    create: (data: Partial<Agent>) => post<Agent>("/api/agents", data),
+  auth: {
+    logout: () => post<void>("/api/auth/logout", {}),
   },
-  tasks: {
-    list: () => get<Task[]>("/api/tasks"),
-    get: (id: string) => get<Task>(`/api/tasks/${id}`),
-    create: (data: { title?: string; description: string }) =>
-      post<Task>("/api/tasks", data),
-    getChannel: (id: string) =>
-      get<{ channel_id: string }>(`/api/tasks/${id}/channel`),
+  orgs: {
+    list: () => get<OrgListItem[]>("/api/orgs"),
+    create: (data: { name: string; slug: string }) =>
+      post<Organization>("/api/orgs", data),
+    get: (orgId: string) => get<Organization>(`/api/orgs/${orgId}`),
+    update: (orgId: string, data: Partial<Organization>) =>
+      put<Organization>(`/api/orgs/${orgId}`, data),
   },
-  channels: {
-    get: (id: string) => get<ChannelDetail>(`/api/channels/${id}`),
-    streamUrl: (id: string) => `${BASE}/api/channels/${id}/stream`,
+  members: {
+    list: (orgId: string) =>
+      get<OrgMemberWithUser[]>(`/api/orgs/${orgId}/members`),
+    invite: (orgId: string, data: { email: string; role: string }) =>
+      post<{ status: string }>(`/api/orgs/${orgId}/members`, data),
+    updateRole: (orgId: string, uid: string, data: { role: string }) =>
+      put<{ status: string }>(`/api/orgs/${orgId}/members/${uid}`, data),
+    remove: (orgId: string, uid: string) =>
+      del(`/api/orgs/${orgId}/members/${uid}`),
   },
 };

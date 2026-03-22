@@ -1,63 +1,50 @@
-export interface Agent {
+// web/lib/types.ts — V2 types matching Go models
+
+export interface Organization {
   id: string;
   name: string;
-  description: string;
-  system_prompt: string;
-  capabilities: string[];
-  color: string;
+  slug: string;
+  plan: string;
+  settings: Record<string, unknown>;
+  budget_usd_monthly?: number;
+  budget_alert_threshold: number;
   created_at: string;
 }
 
-export interface Task {
+export interface OrgListItem {
   id: string;
-  title: string;
-  description: string;
-  status: "pending" | "running" | "completed" | "failed";
+  name: string;
+  slug: string;
+  plan: string;
   created_at: string;
-  completed_at?: string;
 }
 
-export interface Channel {
+export interface User {
   id: string;
-  task_id: string;
-  document: string;
-  status: "active" | "archived";
+  email: string;
+  name: string;
+  avatar_url: string;
   created_at: string;
 }
 
-export interface Message {
+export interface OrgMember {
+  org_id: string;
+  user_id: string;
+  role: "owner" | "admin" | "member" | "viewer";
+  joined_at: string;
+}
+
+export interface OrgMemberWithUser {
   id: string;
-  channel_id: string;
-  sender_id: string;
-  sender_name: string;
-  content: string;
-  type: "text" | "result" | "system";
-  created_at: string;
+  email: string;
+  name: string;
+  avatar_url: string;
+  role: "owner" | "admin" | "member" | "viewer";
+  joined_at: string;
 }
 
-export interface ChannelAgent {
-  channel_id: string;
-  agent_id: string;
-  status: "idle" | "working" | "done";
-}
-
-export interface ChannelDetail {
-  channel: Channel;
-  messages: Message[];
-  agents: ChannelAgent[];
-}
-
-export type SSEEventType =
-  | "task_started"
-  | "channel_created"
-  | "agent_joined"
-  | "agent_working"
-  | "message"
-  | "document_updated"
-  | "agent_done"
-  | "task_completed";
-
-export interface SSEEvent<T = unknown> {
-  type: SSEEventType;
-  data: T;
+export interface PageResponse<T> {
+  items: T[];
+  next_cursor: string | null;
+  has_more: boolean;
 }

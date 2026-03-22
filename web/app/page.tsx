@@ -1,43 +1,43 @@
 "use client";
 
 import { useEffect } from "react";
-import { TaskBar } from "@/components/task/TaskBar";
-import { AgentTopology } from "@/components/topology/AgentTopology";
-import { ChannelPanel } from "@/components/channel/ChannelPanel";
-import { TaskList } from "@/components/task/TaskList";
 import { useTaskHubStore } from "@/lib/store";
 
 export default function Home() {
-  const { loadAgents, loadTasks } = useTaskHubStore();
+  const { loadOrgs, orgs, isLoading } = useTaskHubStore();
 
   useEffect(() => {
-    loadAgents();
-    loadTasks();
-  }, [loadAgents, loadTasks]);
+    loadOrgs();
+  }, [loadOrgs]);
 
   return (
-    <div className="flex flex-col h-screen overflow-hidden">
-      <TaskBar />
-      <div className="flex flex-1 overflow-hidden">
-        {/* Left: Task List + Agent Topology */}
-        <div className="w-[40%] border-r border-gray-800 overflow-hidden flex flex-col">
-          {/* Task History */}
-          <TaskList />
-          {/* Agent Network */}
-          <div className="flex items-center gap-2 px-4 py-2.5 border-b border-t border-gray-800 bg-gray-900/50">
-            <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">
-              Agent Network
-            </span>
-          </div>
-          <div className="flex-1 min-h-0">
-            <AgentTopology />
-          </div>
+    <div className="flex flex-col h-screen overflow-hidden bg-gray-950 text-white">
+      <div className="border-b border-gray-800 bg-gray-900/80 backdrop-blur px-6 py-4">
+        <div className="flex items-center gap-4 max-w-screen-xl mx-auto">
+          <span className="font-semibold text-white text-sm">TaskHub V2</span>
         </div>
+      </div>
 
-        {/* Right: Channel Panel (60%) */}
-        <div className="flex-1 overflow-hidden">
-          <ChannelPanel />
-        </div>
+      <div className="flex-1 flex items-center justify-center">
+        {isLoading ? (
+          <p className="text-gray-500 text-sm">Loading...</p>
+        ) : orgs.length === 0 ? (
+          <p className="text-gray-500 text-sm">
+            No organisations found. Sign in and create one to get started.
+          </p>
+        ) : (
+          <div className="space-y-2">
+            {orgs.map((org) => (
+              <div
+                key={org.id}
+                className="px-4 py-3 bg-gray-900 border border-gray-800 rounded-lg"
+              >
+                <p className="text-sm font-medium">{org.name}</p>
+                <p className="text-xs text-gray-500">{org.slug}</p>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );
