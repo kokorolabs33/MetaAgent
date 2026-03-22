@@ -1,6 +1,6 @@
 import type { Agent, ChannelDetail, Task } from "./types";
 
-const BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8080";
+const BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8090";
 
 async function get<T>(path: string): Promise<T> {
   const res = await fetch(`${BASE}${path}`);

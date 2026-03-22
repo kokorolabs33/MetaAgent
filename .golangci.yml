@@ -1,0 +1,58 @@
+version: "2"
+linters:
+  enable:
+    - bodyclose
+    - contextcheck
+    - gocritic
+    - misspell
+    - nilerr
+    - sqlclosecheck
+    - unconvert
+  settings:
+    gocritic:
+      enabled-checks:
+        - appendCombine
+        - dupImport
+        - nestingReduce
+        - unnecessaryBlock
+    misspell:
+      locale: US
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    rules:
+      - linters:
+          - unused
+        source: ^func \(
+      - linters:
+          - errcheck
+        source: godotenv\.Load
+      - linters:
+          - gocritic
+        text: exitAfterDefer
+        path: cmd/
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+issues:
+  max-issues-per-linter: 50
+  max-same-issues: 5
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - taskhub
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$

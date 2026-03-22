@@ -15,6 +15,7 @@ import type {
 interface TaskHubStore {
   // State
   agents: Agent[];
+  tasks: Task[];
   currentTask: Task | null;
   currentChannel: Channel | null;
   messages: Message[];
@@ -25,6 +26,8 @@ interface TaskHubStore {
 
   // Actions
   loadAgents: () => Promise<void>;
+  loadTasks: () => Promise<void>;
+  selectTask: (task: Task) => Promise<void>;
   submitTask: (description: string) => Promise<void>;
   connectToChannel: (channelId: string) => void;
   handleSSEEvent: (event: SSEEvent) => void;
@@ -33,6 +36,7 @@ interface TaskHubStore {
 
 export const useTaskHubStore = create<TaskHubStore>((set, get) => ({
   agents: [],
+  tasks: [],
   currentTask: null,
   currentChannel: null,
   messages: [],
@@ -50,12 +54,51 @@ export const useTaskHubStore = create<TaskHubStore>((set, get) => ({
     }
   },
 
+  loadTasks: async () => {
+    try {
+      const tasks = await api.tasks.list();
+      // Deduplicate by id (React StrictMode calls effects twice in dev)
+      const seen = new Set<string>();
+      const uniqueTasks = tasks.filter((t) => seen.has(t.id) ? false : (seen.add(t.id), true));
+      set({ tasks: uniqueTasks });
+      // Auto-connect to the latest task that has a channel
+      const { currentTask, connectToChannel } = get();
+      if (!currentTask && tasks.length > 0) {
+        const latest = tasks[0]; // API returns newest first
+        try {
+          const { channel_id } = await api.tasks.getChannel(latest.id);
+          set({ currentTask: latest });
+          connectToChannel(channel_id);
+        } catch {
+          // No channel yet (pending task), just show the task
+          set({ currentTask: latest });
+        }
+      }
+    } catch (e) {
+      console.error("loadTasks:", e);
+    }
+  },
+
+  selectTask: async (task: Task) => {
+    get().reset();
+    set({ currentTask: task, isLoading: true });
+    try {
+      const { channel_id } = await api.tasks.getChannel(task.id);
+      get().connectToChannel(channel_id);
+    } catch {
+      set({ isLoading: false });
+    }
+  },
+
   submitTask: async (description: string) => {
     get().reset();
     set({ isLoading: true });
     try {
       const task = await api.tasks.create({ description });
-      set({ currentTask: task });
+      set((state) => ({
+        currentTask: task,
+        tasks: state.tasks.some((t) => t.id === task.id) ? state.tasks : [task, ...state.tasks],
+      }));
       // Poll for channel until master agent creates it
       pollForChannel(task.id, get().connectToChannel);
     } catch (e) {

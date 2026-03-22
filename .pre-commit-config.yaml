@@ -1,0 +1,71 @@
+# Pre-commit hooks for taskhub
+# Install: pre-commit install
+# Run manually: pre-commit run --all-files
+
+repos:
+  # ─── Basic file hygiene ────────────────────────────────────
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+        exclude: '^(web/\.next/|web/node_modules/)'
+      - id: end-of-file-fixer
+        exclude: '^(web/\.next/|web/node_modules/)'
+      - id: check-yaml
+        args: [--allow-multiple-documents]
+      - id: check-added-large-files
+        args: [--maxkb=500]
+      - id: check-merge-conflict
+      - id: detect-private-key
+
+  # ─── Secret detection ─────────────────────────────────────
+  - repo: https://github.com/Yelp/detect-secrets
+    rev: v1.5.0
+    hooks:
+      - id: detect-secrets
+        args:
+          - --exclude-files
+          - '(^|/)pnpm-lock\.yaml$'
+          - --exclude-files
+          - '(^|/)go\.sum$'
+
+  # ─── Go checks ────────────────────────────────────────────
+  - repo: local
+    hooks:
+      - id: go-fmt
+        name: gofmt
+        entry: bash -c 'test -z "$(gofmt -l cmd/ internal/)" || (echo "Go files need formatting:" && gofmt -l cmd/ internal/ && exit 1)'
+        language: system
+        pass_filenames: false
+        types: [go]
+
+      - id: go-vet
+        name: go vet
+        entry: bash -c 'go vet ./...'
+        language: system
+        pass_filenames: false
+        types: [go]
+
+      - id: go-build
+        name: go build
+        entry: bash -c 'go build ./...'
+        language: system
+        pass_filenames: false
+        types: [go]
+
+  # ─── Frontend checks ──────────────────────────────────────
+  - repo: local
+    hooks:
+      - id: frontend-lint
+        name: eslint
+        entry: bash -c 'cd web && pnpm lint'
+        language: system
+        pass_filenames: false
+        types_or: [javascript, jsx, ts, tsx]
+
+      - id: frontend-typecheck
+        name: tsc --noEmit
+        entry: bash -c 'cd web && pnpm tsc --noEmit'
+        language: system
+        pass_filenames: false
+        types_or: [javascript, jsx, ts, tsx]
