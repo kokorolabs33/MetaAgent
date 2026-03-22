@@ -26,7 +26,7 @@ type orgListItemWithRole struct {
 	Role string `json:"role"`
 }
 
-// List returns the organisations the authenticated user belongs to.
+// List returns the organizations the authenticated user belongs to.
 func (h *OrgHandler) List(w http.ResponseWriter, r *http.Request) {
 	user := ctxutil.UserFromCtx(r.Context())
 
@@ -65,7 +65,7 @@ type createOrgRequest struct {
 	Slug string `json:"slug"`
 }
 
-// Create creates a new organisation and makes the caller the owner.
+// Create creates a new organization and makes the caller the owner.
 func (h *OrgHandler) Create(w http.ResponseWriter, r *http.Request) {
 	var req createOrgRequest
 	if err := decodeJSON(w, r, &req); err != nil {
@@ -102,7 +102,7 @@ func (h *OrgHandler) Create(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "could not begin transaction", http.StatusInternalServerError)
 		return
 	}
-	defer tx.Rollback(r.Context())
+	defer func() { _ = tx.Rollback(r.Context()) }()
 
 	_, err = tx.Exec(r.Context(),
 		`INSERT INTO organizations (id, name, slug, plan, settings, budget_alert_threshold, created_at)
@@ -134,7 +134,7 @@ func (h *OrgHandler) Create(w http.ResponseWriter, r *http.Request) {
 	jsonCreated(w, org)
 }
 
-// Get returns the organisation already loaded by the RequireOrg middleware.
+// Get returns the organization already loaded by the RequireOrg middleware.
 func (h *OrgHandler) Get(w http.ResponseWriter, r *http.Request) {
 	org := ctxutil.OrgFromCtx(r.Context())
 	jsonOK(w, org)
@@ -147,7 +147,7 @@ type updateOrgRequest struct {
 	BudgetAlertThreshold *float64 `json:"budget_alert_threshold"`
 }
 
-// Update modifies an organisation's mutable fields (owner-only, enforced by route middleware).
+// Update modifies an organization's mutable fields (owner-only, enforced by route middleware).
 func (h *OrgHandler) Update(w http.ResponseWriter, r *http.Request) {
 	var req updateOrgRequest
 	if err := decodeJSON(w, r, &req); err != nil {

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+
 	"taskhub/internal/models"
 )
 
@@ -30,7 +31,7 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, v any) error {
 	return json.NewDecoder(r.Body).Decode(v)
 }
 
-func pageRequestFromQuery(r *http.Request) models.PageRequest {
+func pageRequestFromQuery(r *http.Request) models.PageRequest { //nolint:unused // used in Plan 2 (agent/task handlers)
 	cursor := r.URL.Query().Get("cursor")
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	return models.NewPageRequest(cursor, limit)

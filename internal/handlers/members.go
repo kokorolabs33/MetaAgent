@@ -15,7 +15,7 @@ type MemberHandler struct {
 	DB *pgxpool.Pool
 }
 
-// List returns all members of the organisation with user info.
+// List returns all members of the organization with user info.
 func (h *MemberHandler) List(w http.ResponseWriter, r *http.Request) {
 	org := ctxutil.OrgFromCtx(r.Context())
 
@@ -54,7 +54,7 @@ type inviteRequest struct {
 	Role  string `json:"role"`
 }
 
-// Invite adds a user to the organisation by email.
+// Invite adds a user to the organization by email.
 func (h *MemberHandler) Invite(w http.ResponseWriter, r *http.Request) {
 	var req inviteRequest
 	if err := decodeJSON(w, r, &req); err != nil {
@@ -109,7 +109,7 @@ type updateRoleRequest struct {
 	Role string `json:"role"`
 }
 
-// UpdateRole changes a member's role within the organisation.
+// UpdateRole changes a member's role within the organization.
 func (h *MemberHandler) UpdateRole(w http.ResponseWriter, r *http.Request) {
 	var req updateRoleRequest
 	if err := decodeJSON(w, r, &req); err != nil {
@@ -144,7 +144,7 @@ func (h *MemberHandler) UpdateRole(w http.ResponseWriter, r *http.Request) {
 	jsonOK(w, map[string]string{"status": "updated"})
 }
 
-// Remove deletes a member from the organisation.
+// Remove deletes a member from the organization.
 func (h *MemberHandler) Remove(w http.ResponseWriter, r *http.Request) {
 	user := ctxutil.UserFromCtx(r.Context())
 	uid := chi.URLParam(r, "uid")
