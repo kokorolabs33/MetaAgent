@@ -48,3 +48,21 @@ export interface PageResponse<T> {
   next_cursor: string | null;
   has_more: boolean;
 }
+
+// Agent Registry
+
+export interface Agent {
+  id: string;
+  org_id: string;
+  name: string;
+  version: string;
+  description: string;
+  endpoint: string;
+  adapter_type: "http_poll" | "native";
+  adapter_config?: Record<string, unknown>;
+  auth_type: "none" | "bearer" | "api_key" | "basic";
+  capabilities: string[];
+  status: "active" | "inactive" | "degraded";
+  created_at: string;
+  updated_at: string;
+}
