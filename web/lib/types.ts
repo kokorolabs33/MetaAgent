@@ -1,4 +1,4 @@
-// web/lib/types.ts — V2 types matching Go models
+// web/lib/types.ts — TypeScript interfaces matching Go models
 
 export interface Organization {
   id: string;

@@ -26,7 +26,7 @@ func main() {
 	ctx := context.Background()
 	cfg := config.Load()
 
-	log.Printf("TaskHub V2 — mode: %s", cfg.Mode)
+	log.Printf("TaskHub — mode: %s", cfg.Mode)
 
 	// Database
 	pool, err := db.Open(ctx, cfg.DatabaseURL)
@@ -149,7 +149,7 @@ func main() {
 		})
 	})
 
-	log.Printf("TaskHub V2 listening on :%s", cfg.Port)
+	log.Printf("TaskHub listening on :%s", cfg.Port)
 	if err := http.ListenAndServe(":"+cfg.Port, r); err != nil {
 		log.Fatalf("listen: %v", err)
 	}
