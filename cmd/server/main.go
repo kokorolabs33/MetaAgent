@@ -9,10 +9,15 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
 
+	"taskhub/internal/adapter"
+	"taskhub/internal/audit"
 	"taskhub/internal/auth"
 	"taskhub/internal/config"
 	"taskhub/internal/db"
+	"taskhub/internal/events"
+	"taskhub/internal/executor"
 	"taskhub/internal/handlers"
+	"taskhub/internal/orchestrator"
 	"taskhub/internal/rbac"
 )
 
@@ -49,6 +54,27 @@ func main() {
 	orgH := &handlers.OrgHandler{DB: pool}
 	memberH := &handlers.MemberHandler{DB: pool}
 	agentH := &handlers.AgentHandler{DB: pool}
+
+	// Execution engine
+	eventStore := &events.Store{DB: pool}
+	broker := events.NewBroker()
+	auditLogger := &audit.Logger{DB: pool}
+	orch := &orchestrator.Orchestrator{}
+
+	adapters := map[string]adapter.AgentAdapter{
+		"http_poll": adapter.NewHTTPPollAdapter(),
+		"native":    adapter.NewNativeAdapter(),
+	}
+
+	exec := &executor.DAGExecutor{
+		DB: pool, Broker: broker, EventStore: eventStore,
+		Audit: auditLogger, Orchestrator: orch, Adapters: adapters,
+	}
+	exec.Recover(ctx)
+
+	taskH := &handlers.TaskHandler{DB: pool, Executor: exec, EventStore: eventStore, Audit: auditLogger}
+	msgH := &handlers.MessageHandler{DB: pool, Executor: exec, EventStore: eventStore, Broker: broker}
+	streamH := &handlers.StreamHandler{EventStore: eventStore, Broker: broker}
 
 	// Router
 	r := chi.NewRouter()
@@ -99,7 +125,20 @@ func main() {
 			r.With(rbac.RequireRole("admin")).Delete("/agents/{id}", agentH.Delete)
 			r.Post("/agents/{id}/healthcheck", agentH.Healthcheck)
 
-			// TODO: task routes
+			// Tasks
+			r.With(rbac.RequireRole("member")).Post("/tasks", taskH.Create)
+			r.Get("/tasks", taskH.List)
+			r.Get("/tasks/{id}", taskH.Get)
+			r.Post("/tasks/{id}/cancel", taskH.Cancel)
+			r.Get("/tasks/{id}/cost", taskH.GetCost)
+			r.Get("/tasks/{id}/subtasks", taskH.ListSubtasks)
+
+			// Messages (Group Chat)
+			r.Get("/tasks/{id}/messages", msgH.List)
+			r.With(rbac.RequireRole("member")).Post("/tasks/{id}/messages", msgH.Send)
+
+			// SSE Event Stream
+			r.Get("/tasks/{id}/events", streamH.Stream)
 		})
 	})
 
