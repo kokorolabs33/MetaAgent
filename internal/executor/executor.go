@@ -82,6 +82,7 @@ func (e *DAGExecutor) Execute(ctx context.Context, task models.Task) error {
 		return fmt.Errorf("update task to planning: %w", err)
 	}
 	e.publishEvent(ctx, task.ID, "", "task.planning", "system", "", nil)
+	e.publishSystemMessage(ctx, task.ID, "Planning task: analyzing and decomposing into subtasks...")
 
 	// 2. Load org for budget checks
 	var orgBudget *float64
@@ -130,6 +131,7 @@ func (e *DAGExecutor) Execute(ctx context.Context, task models.Task) error {
 		return fmt.Errorf("store plan: %w", err)
 	}
 	e.publishEvent(ctx, task.ID, "", "task.planned", "system", "", map[string]any{"summary": plan.Summary})
+	e.publishSystemMessage(ctx, task.ID, fmt.Sprintf("Plan ready: %s (%d subtasks)", plan.Summary, len(plan.SubTasks)))
 
 	// 7. Create subtask records from plan
 	subtasks, err := e.createSubtasks(ctx, task.ID, plan, agents)
@@ -441,6 +443,9 @@ func (e *DAGExecutor) runSubtask(
 		Endpoint:     agent.Endpoint,
 	})
 
+	// System message: agent started
+	e.publishSystemMessage(ctx, task.ID, fmt.Sprintf("%s started working on: %s", agent.Name, st.Instruction))
+
 	// Polling loop with exponential backoff
 	e.pollSubtask(ctx, task, st, agent, handle, allSubtasks, agents, statusChangeCh)
 }
@@ -515,6 +520,7 @@ func (e *DAGExecutor) pollSubtask(
 			e.publishEvent(ctx, task.ID, st.ID, "subtask.completed", "agent", agent.ID, map[string]any{
 				"output": status.Result,
 			})
+			e.publishSystemMessage(ctx, task.ID, fmt.Sprintf("%s completed the task", agent.Name))
 
 			// Audit: agent call completed
 			_ = e.Audit.Log(ctx, audit.Entry{
@@ -927,6 +933,28 @@ func (e *DAGExecutor) publishEvent(ctx context.Context, taskID, subtaskID, event
 		return
 	}
 	e.Broker.Publish(evt)
+}
+
+// publishSystemMessage inserts a system message into the group chat.
+func (e *DAGExecutor) publishSystemMessage(ctx context.Context, taskID, content string) {
+	msgID := uuid.New().String()
+	now := time.Now()
+
+	_, err := e.DB.Exec(ctx,
+		`INSERT INTO messages (id, task_id, sender_type, sender_id, sender_name, content, mentions, created_at)
+		 VALUES ($1, $2, 'system', '', 'System', $3, '{}', $4)`,
+		msgID, taskID, content, now)
+	if err != nil {
+		log.Printf("executor: insert system message: %v", err)
+		return
+	}
+
+	e.publishEvent(ctx, taskID, "", "message", "system", "", map[string]any{
+		"message_id":  msgID,
+		"sender_type": "system",
+		"sender_name": "System",
+		"content":     content,
+	})
 }
 
 // publishMessage inserts a message into the messages table and publishes it as an event.
