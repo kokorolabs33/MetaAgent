@@ -7,6 +7,7 @@ import (
 )
 
 type Config struct {
+	Mode            string // "local" (no auth, single user) or "cloud" (full auth + multi-org)
 	DatabaseURL     string
 	Port            string
 	GoogleClientID  string
@@ -17,10 +18,16 @@ type Config struct {
 	FrontendURL     string
 }
 
+// IsLocal returns true if running in local/community mode (no auth required).
+func (c *Config) IsLocal() bool {
+	return c.Mode != "cloud"
+}
+
 func Load() *Config {
 	_ = godotenv.Load()
 	return &Config{
-		DatabaseURL:     getEnv("DATABASE_URL", "postgres://localhost:5432/taskhub_v2?sslmode=disable"),
+		Mode:            getEnv("TASKHUB_MODE", "local"),
+		DatabaseURL:     getEnv("DATABASE_URL", "postgres://localhost:5432/taskhub?sslmode=disable"),
 		Port:            getEnv("PORT", "8080"),
 		GoogleClientID:  getEnv("GOOGLE_CLIENT_ID", ""),
 		GoogleSecret:    getEnv("GOOGLE_CLIENT_SECRET", ""),

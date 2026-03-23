@@ -26,6 +26,8 @@ func main() {
 	ctx := context.Background()
 	cfg := config.Load()
 
+	log.Printf("TaskHub V2 — mode: %s", cfg.Mode)
+
 	// Database
 	pool, err := db.Open(ctx, cfg.DatabaseURL)
 	if err != nil {
@@ -37,9 +39,14 @@ func main() {
 		log.Fatalf("migrations: %v", err)
 	}
 
+	// Local mode: seed default user + org, no auth needed
+	if cfg.IsLocal() {
+		seed.LocalSeedAndLog(ctx, pool)
+	}
+
 	// Auth
 	sessionStore := &auth.SessionStore{DB: pool}
-	authMw := &auth.Middleware{Sessions: sessionStore}
+	authMw := &auth.Middleware{Sessions: sessionStore, LocalMode: cfg.IsLocal()}
 	authH := &auth.Handler{
 		DB:           pool,
 		Sessions:     sessionStore,
@@ -47,9 +54,6 @@ func main() {
 		GoogleSecret: cfg.GoogleSecret,
 		FrontendURL:  cfg.FrontendURL,
 	}
-
-	// Dev seed (creates test user + org + session for local development)
-	seed.DevSeedAndLog(ctx, pool, sessionStore)
 
 	// RBAC
 	rbacMw := &rbac.Middleware{DB: pool}
@@ -87,29 +91,27 @@ func main() {
 	r.Use(cors.Handler(cors.Options{
 		AllowedOrigins:   []string{cfg.FrontendURL},
 		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
-		AllowedHeaders:   []string{"Content-Type", "Authorization"},
+		AllowedHeaders:   []string{"Content-Type", "Authorization", "Cookie"},
 		AllowCredentials: true,
 	}))
 
-	// Health check — no auth
+	// Health check
 	r.Get("/health", func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
 
-	// Auth routes — no auth middleware
+	// Auth routes (cloud mode only, but register them always for API completeness)
 	r.Post("/api/auth/google/login", authH.GoogleLogin)
 	r.Get("/api/auth/google/callback", authH.GoogleCallback)
 	r.Post("/api/auth/logout", authH.Logout)
 
-	// Authenticated routes
+	// All API routes — auth middleware handles local vs cloud
 	r.Group(func(r chi.Router) {
 		r.Use(authMw.RequireAuth)
 
 		r.Get("/api/orgs", orgH.List)
 		r.Post("/api/orgs", orgH.Create)
 
-		// Org-scoped routes
 		r.Route("/api/orgs/{org_id}", func(r chi.Router) {
 			r.Use(rbacMw.RequireOrg)
 
@@ -138,11 +140,11 @@ func main() {
 			r.Get("/tasks/{id}/cost", taskH.GetCost)
 			r.Get("/tasks/{id}/subtasks", taskH.ListSubtasks)
 
-			// Messages (Group Chat)
+			// Messages
 			r.Get("/tasks/{id}/messages", msgH.List)
 			r.With(rbac.RequireRole("member")).Post("/tasks/{id}/messages", msgH.Send)
 
-			// SSE Event Stream
+			// SSE
 			r.Get("/tasks/{id}/events", streamH.Stream)
 		})
 	})
