@@ -75,7 +75,7 @@ func (h *TaskHandler) Create(w http.ResponseWriter, r *http.Request) {
 
 	// Spawn executor in a background goroutine.
 	// Use context.Background() because execution outlives the HTTP request.
-	go h.Executor.Execute(context.Background(), task) //nolint:errcheck // errors are recorded in task status
+	go h.Executor.Execute(context.Background(), task) //nolint:errcheck,contextcheck // errors are recorded in task status; context.Background is intentional as execution outlives the HTTP request
 
 	jsonCreated(w, task)
 }
@@ -186,7 +186,7 @@ func (h *TaskHandler) Cancel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	jsonOK(w, map[string]string{"status": "cancelled"})
+	jsonOK(w, map[string]string{"status": "canceled"})
 }
 
 // GetCost handles GET /tasks/{id}/cost.

@@ -10,7 +10,7 @@ type Task struct {
 	OrgID       string          `json:"org_id"`
 	Title       string          `json:"title"`
 	Description string          `json:"description"`
-	Status      string          `json:"status"` // pending, planning, running, completed, failed, cancelled
+	Status      string          `json:"status"` // pending, planning, running, completed, failed, canceled
 	CreatedBy   string          `json:"created_by"`
 	Metadata    json.RawMessage `json:"metadata,omitempty"`
 	Plan        json.RawMessage `json:"plan,omitempty"`
@@ -27,7 +27,7 @@ type SubTask struct {
 	AgentID      string          `json:"agent_id"`
 	Instruction  string          `json:"instruction"`
 	DependsOn    []string        `json:"depends_on"`
-	Status       string          `json:"status"` // pending, running, completed, failed, waiting_for_input, cancelled, blocked
+	Status       string          `json:"status"` // pending, running, completed, failed, waiting_for_input, canceled, blocked
 	Input        json.RawMessage `json:"input,omitempty"`
 	Output       json.RawMessage `json:"output,omitempty"`
 	Error        string          `json:"error,omitempty"`

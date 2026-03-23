@@ -30,7 +30,7 @@ import (
 var (
 	ErrSubtaskNotWaiting = errors.New("subtask is not waiting for input")
 	ErrBudgetExceeded    = errors.New("monthly budget exceeded")
-	ErrTaskCancelled     = errors.New("task was cancelled")
+	ErrTaskCanceled      = errors.New("task was canceled")
 )
 
 // Polling backoff intervals (exponential with cap).
@@ -95,7 +95,7 @@ func (e *DAGExecutor) Execute(ctx context.Context, task models.Task) error {
 
 	// 3. Check budget before LLM call
 	if err := e.checkBudget(ctx, task.OrgID, orgBudget); err != nil {
-		e.updateTaskStatus(ctx, task.ID, "failed", err.Error())
+		_ = e.updateTaskStatus(ctx, task.ID, "failed", err.Error())
 		e.publishEvent(ctx, task.ID, "", "task.failed", "system", "", map[string]any{"error": err.Error()})
 		return err
 	}
@@ -107,7 +107,7 @@ func (e *DAGExecutor) Execute(ctx context.Context, task models.Task) error {
 	}
 	if len(agents) == 0 {
 		errMsg := "no agents available for this organization"
-		e.updateTaskStatus(ctx, task.ID, "failed", errMsg)
+		_ = e.updateTaskStatus(ctx, task.ID, "failed", errMsg)
 		e.publishEvent(ctx, task.ID, "", "task.failed", "system", "", map[string]any{"error": errMsg})
 		return errors.New(errMsg)
 	}
@@ -116,7 +116,7 @@ func (e *DAGExecutor) Execute(ctx context.Context, task models.Task) error {
 	plan, err := e.Orchestrator.Plan(ctx, task, agents)
 	if err != nil {
 		errMsg := fmt.Sprintf("planning failed: %v", err)
-		e.updateTaskStatus(ctx, task.ID, "failed", errMsg)
+		_ = e.updateTaskStatus(ctx, task.ID, "failed", errMsg)
 		e.publishEvent(ctx, task.ID, "", "task.failed", "system", "", map[string]any{"error": errMsg})
 		return fmt.Errorf("orchestrator plan: %w", err)
 	}
@@ -261,7 +261,7 @@ func (e *DAGExecutor) runDAGLoop(ctx context.Context, task models.Task, subtasks
 
 		for i := range subtasks {
 			switch subtasks[i].Status {
-			case "completed", "cancelled":
+			case "completed", "canceled":
 				// Terminal success states
 			case "failed":
 				anyFailed = true
@@ -285,7 +285,7 @@ func (e *DAGExecutor) runDAGLoop(ctx context.Context, task models.Task, subtasks
 		// All completed (no pending, no running, no failed)
 		if allDone && !anyFailed {
 			now := time.Now()
-			e.DB.Exec(taskCtx, `UPDATE tasks SET status = 'completed', completed_at = $1 WHERE id = $2`, now, task.ID)
+			_, _ = e.DB.Exec(taskCtx, `UPDATE tasks SET status = 'completed', completed_at = $1 WHERE id = $2`, now, task.ID)
 			e.publishEvent(taskCtx, task.ID, "", "task.completed", "system", "", nil)
 			wg.Wait()
 			return nil
@@ -298,7 +298,7 @@ func (e *DAGExecutor) runDAGLoop(ctx context.Context, task models.Task, subtasks
 			if err != nil || !replanned {
 				// No more replans or replan failed — task failed
 				errMsg := fmt.Sprintf("subtask %s failed: %s", failedSubtask.ID, failedSubtask.Error)
-				e.updateTaskStatus(taskCtx, task.ID, "failed", errMsg)
+				_ = e.updateTaskStatus(taskCtx, task.ID, "failed", errMsg)
 				e.publishEvent(taskCtx, task.ID, "", "task.failed", "system", "", map[string]any{"error": errMsg})
 				wg.Wait()
 				return fmt.Errorf("task failed: %s", errMsg)
@@ -357,11 +357,11 @@ func (e *DAGExecutor) runDAGLoop(ctx context.Context, task models.Task, subtasks
 		// Wait for a status change or context cancellation
 		select {
 		case <-taskCtx.Done():
-			// Task was cancelled
-			e.updateTaskStatus(ctx, task.ID, "cancelled", "task cancelled")
-			e.publishEvent(ctx, task.ID, "", "task.cancelled", "system", "", nil)
+			// Task was canceled
+			_ = e.updateTaskStatus(ctx, task.ID, "canceled", "task canceled")
+			e.publishEvent(ctx, task.ID, "", "task.canceled", "system", "", nil)
 			wg.Wait()
-			return ErrTaskCancelled
+			return ErrTaskCanceled
 		case <-statusChangeCh:
 			// A subtask changed status, re-evaluate the DAG
 			continue
@@ -399,7 +399,7 @@ func (e *DAGExecutor) runSubtask(
 	inputJSON, _ := json.Marshal(inputMap)
 
 	// Store input in DB
-	e.DB.Exec(ctx, `UPDATE subtasks SET input = $1 WHERE id = $2`, inputJSON, st.ID)
+	_, _ = e.DB.Exec(ctx, `UPDATE subtasks SET input = $1 WHERE id = $2`, inputJSON, st.ID)
 
 	// Get the adapter for this agent type
 	adp, ok := e.Adapters[agent.AdapterType]
@@ -428,7 +428,7 @@ func (e *DAGExecutor) runSubtask(
 	}
 
 	// Audit: agent call submitted
-	e.Audit.Log(ctx, audit.Entry{
+	_ = e.Audit.Log(ctx, audit.Entry{
 		OrgID:        task.OrgID,
 		TaskID:       task.ID,
 		SubtaskID:    st.ID,
@@ -513,11 +513,11 @@ func (e *DAGExecutor) pollSubtask(
 			}
 
 			e.publishEvent(ctx, task.ID, st.ID, "subtask.completed", "agent", agent.ID, map[string]any{
-				"output": json.RawMessage(status.Result),
+				"output": status.Result,
 			})
 
 			// Audit: agent call completed
-			e.Audit.Log(ctx, audit.Entry{
+			_ = e.Audit.Log(ctx, audit.Entry{
 				OrgID:        task.OrgID,
 				TaskID:       task.ID,
 				SubtaskID:    st.ID,
@@ -534,14 +534,14 @@ func (e *DAGExecutor) pollSubtask(
 			// Check retry
 			var attempt int
 			var maxAttempts int
-			e.DB.QueryRow(ctx,
+			_ = e.DB.QueryRow(ctx,
 				`SELECT attempt, max_attempts FROM subtasks WHERE id = $1`, st.ID).
 				Scan(&attempt, &maxAttempts)
 
 			if attempt < maxAttempts {
 				// Retry: reset to pending, the DAG loop will re-pick it up
 				log.Printf("executor: subtask %s failed (attempt %d/%d), retrying: %s", st.ID, attempt, maxAttempts, status.Error)
-				e.DB.Exec(ctx,
+				_, _ = e.DB.Exec(ctx,
 					`UPDATE subtasks SET status = 'pending', error = $1, poll_job_id = NULL, poll_endpoint = NULL WHERE id = $2`,
 					status.Error, st.ID)
 				e.publishEvent(ctx, task.ID, st.ID, "subtask.failed", "agent", agent.ID, map[string]any{
@@ -562,7 +562,7 @@ func (e *DAGExecutor) pollSubtask(
 			e.signals.Store(st.ID, inputCh)
 
 			// Update DB status
-			e.DB.Exec(ctx, `UPDATE subtasks SET status = 'waiting_for_input' WHERE id = $1`, st.ID)
+			_, _ = e.DB.Exec(ctx, `UPDATE subtasks SET status = 'waiting_for_input' WHERE id = $1`, st.ID)
 
 			// Publish event
 			var inputReqData map[string]any
@@ -603,7 +603,7 @@ func (e *DAGExecutor) pollSubtask(
 				}
 
 				// Resume polling
-				e.DB.Exec(ctx, `UPDATE subtasks SET status = 'running' WHERE id = $1`, st.ID)
+				_, _ = e.DB.Exec(ctx, `UPDATE subtasks SET status = 'running' WHERE id = $1`, st.ID)
 				e.publishEvent(ctx, task.ID, st.ID, "subtask.input_provided", "user", userInput.SubtaskID, map[string]any{
 					"message": userInput.Message,
 				})
@@ -635,14 +635,14 @@ func (e *DAGExecutor) Cancel(ctx context.Context, taskID string) error {
 		cancelFn.(context.CancelFunc)()
 	}
 
-	e.updateTaskStatus(ctx, taskID, "cancelled", "cancelled by user")
+	_ = e.updateTaskStatus(ctx, taskID, "canceled", "canceled by user")
 
 	// Cancel all running/pending subtasks
-	e.DB.Exec(ctx,
-		`UPDATE subtasks SET status = 'cancelled' WHERE task_id = $1 AND status IN ('pending', 'running', 'waiting_for_input')`,
+	_, _ = e.DB.Exec(ctx,
+		`UPDATE subtasks SET status = 'canceled' WHERE task_id = $1 AND status IN ('pending', 'running', 'waiting_for_input')`,
 		taskID)
 
-	e.publishEvent(ctx, taskID, "", "task.cancelled", "user", "", nil)
+	e.publishEvent(ctx, taskID, "", "task.canceled", "user", "", nil)
 	return nil
 }
 
@@ -690,7 +690,7 @@ func (e *DAGExecutor) propagateBlocked(ctx context.Context, failedSubtaskID stri
 
 	// Mark each as blocked and recursively propagate
 	for _, blockedID := range blocked {
-		e.DB.Exec(ctx,
+		_, _ = e.DB.Exec(ctx,
 			`UPDATE subtasks SET status = 'blocked', error = 'upstream dependency failed' WHERE id = $1 AND status IN ('pending')`,
 			blockedID)
 		e.publishEvent(ctx, "", blockedID, "subtask.blocked", "system", "", map[string]any{
@@ -814,12 +814,12 @@ func (e *DAGExecutor) tryReplan(
 	// Remove blocked subtasks that will be replaced
 	for _, st := range currentSubtasks {
 		if st.Status == "blocked" {
-			e.DB.Exec(ctx, `DELETE FROM subtasks WHERE id = $1`, st.ID)
+			_, _ = e.DB.Exec(ctx, `DELETE FROM subtasks WHERE id = $1`, st.ID)
 		}
 	}
 
 	// Also remove the failed subtask itself
-	e.DB.Exec(ctx, `DELETE FROM subtasks WHERE id = $1`, failed.ID)
+	_, _ = e.DB.Exec(ctx, `DELETE FROM subtasks WHERE id = $1`, failed.ID)
 
 	// Create new subtasks from replan
 	_, err = e.createSubtasks(ctx, task.ID, newPlan, agents)
@@ -839,7 +839,7 @@ func (e *DAGExecutor) tryReplan(
 
 // failSubtask marks a subtask as failed and propagates blocked status.
 func (e *DAGExecutor) failSubtask(ctx context.Context, taskID, subtaskID, errMsg string, allSubtasks []models.SubTask) {
-	e.DB.Exec(ctx,
+	_, _ = e.DB.Exec(ctx,
 		`UPDATE subtasks SET status = 'failed', error = $1 WHERE id = $2`,
 		errMsg, subtaskID)
 

@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"regexp"
@@ -102,7 +103,7 @@ func (h *OrgHandler) Create(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "could not begin transaction", http.StatusInternalServerError)
 		return
 	}
-	defer func() { _ = tx.Rollback(r.Context()) }()
+	defer func() { _ = tx.Rollback(context.Background()) }() //nolint:contextcheck // use background ctx for deferred rollback as request context may be canceled
 
 	_, err = tx.Exec(r.Context(),
 		`INSERT INTO organizations (id, name, slug, plan, settings, budget_alert_threshold, created_at)

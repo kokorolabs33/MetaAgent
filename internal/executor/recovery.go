@@ -118,89 +118,93 @@ func (e *DAGExecutor) resumeTask(parentCtx context.Context, taskID string) error
 
 	// Resume running subtasks that have a poll_job_id (scenario 1)
 	for _, st := range subtasks {
-		if st.Status == "running" && st.PollJobID != "" {
-			agent, ok := agentMap[st.AgentID]
-			if !ok {
-				log.Printf("recovery: agent %s not found for subtask %s, marking failed", st.AgentID, st.ID)
-				e.DB.Exec(taskCtx,
-					`UPDATE subtasks SET status = 'failed', error = 'agent not found during recovery' WHERE id = $1`, st.ID)
-				continue
-			}
-
-			handle := adapter.JobHandle{
-				JobID:          st.PollJobID,
-				StatusEndpoint: st.PollEndpoint,
-			}
-
-			stCopy := st
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				log.Printf("recovery: resuming poll for subtask %s (job %s)", stCopy.ID, handle.JobID)
-				e.pollSubtask(taskCtx, *task, stCopy, agent, handle, subtasks, agents, statusChangeCh)
-			}()
+		if st.Status != "running" || st.PollJobID == "" {
+			continue
 		}
+
+		agent, ok := agentMap[st.AgentID]
+		if !ok {
+			log.Printf("recovery: agent %s not found for subtask %s, marking failed", st.AgentID, st.ID)
+			_, _ = e.DB.Exec(taskCtx,
+				`UPDATE subtasks SET status = 'failed', error = 'agent not found during recovery' WHERE id = $1`, st.ID)
+			continue
+		}
+
+		handle := adapter.JobHandle{
+			JobID:          st.PollJobID,
+			StatusEndpoint: st.PollEndpoint,
+		}
+
+		stCopy := st
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			log.Printf("recovery: resuming poll for subtask %s (job %s)", stCopy.ID, handle.JobID)
+			e.pollSubtask(taskCtx, *task, stCopy, agent, handle, subtasks, agents, statusChangeCh)
+		}()
 	}
 
 	// Re-register signal channels for waiting_for_input subtasks (scenario 3)
 	for _, st := range subtasks {
-		if st.Status == "waiting_for_input" {
-			agent, ok := agentMap[st.AgentID]
-			if !ok {
-				log.Printf("recovery: agent %s not found for waiting subtask %s", st.AgentID, st.ID)
-				continue
-			}
+		if st.Status != "waiting_for_input" {
+			continue
+		}
 
-			handle := adapter.JobHandle{
-				JobID:          st.PollJobID,
-				StatusEndpoint: st.PollEndpoint,
-			}
+		agent, ok := agentMap[st.AgentID]
+		if !ok {
+			log.Printf("recovery: agent %s not found for waiting subtask %s", st.AgentID, st.ID)
+			continue
+		}
 
-			// Re-register signal channel
-			inputCh := make(chan adapter.UserInput, 1)
-			e.signals.Store(st.ID, inputCh)
+		handle := adapter.JobHandle{
+			JobID:          st.PollJobID,
+			StatusEndpoint: st.PollEndpoint,
+		}
 
-			stCopy := st
-			adp := e.Adapters[agent.AdapterType]
+		// Re-register signal channel
+		inputCh := make(chan adapter.UserInput, 1)
+		e.signals.Store(st.ID, inputCh)
 
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				log.Printf("recovery: re-waiting for input on subtask %s", stCopy.ID)
+		stCopy := st
+		adp := e.Adapters[agent.AdapterType]
 
-				select {
-				case <-taskCtx.Done():
-					e.signals.Delete(stCopy.ID)
-					return
-				case userInput := <-inputCh:
-					e.signals.Delete(stCopy.ID)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			log.Printf("recovery: re-waiting for input on subtask %s", stCopy.ID)
 
-					// Send input to agent
-					if adp != nil {
-						if err := adp.SendInput(taskCtx, agent, handle, userInput); err != nil {
-							log.Printf("recovery: send input to subtask %s: %v", stCopy.ID, err)
-							e.failSubtask(taskCtx, taskID, stCopy.ID, fmt.Sprintf("send input failed: %v", err), subtasks)
-							select {
-							case statusChangeCh <- stCopy.ID:
-							default:
-							}
-							return
+			select {
+			case <-taskCtx.Done():
+				e.signals.Delete(stCopy.ID)
+				return
+			case userInput := <-inputCh:
+				e.signals.Delete(stCopy.ID)
+
+				// Send input to agent
+				if adp != nil {
+					if err := adp.SendInput(taskCtx, agent, handle, userInput); err != nil {
+						log.Printf("recovery: send input to subtask %s: %v", stCopy.ID, err)
+						e.failSubtask(taskCtx, taskID, stCopy.ID, fmt.Sprintf("send input failed: %v", err), subtasks)
+						select {
+						case statusChangeCh <- stCopy.ID:
+						default:
 						}
-					}
-
-					// Resume to running status
-					e.DB.Exec(taskCtx, `UPDATE subtasks SET status = 'running' WHERE id = $1`, stCopy.ID)
-					e.publishEvent(taskCtx, taskID, stCopy.ID, "subtask.input_provided", "user", "", map[string]any{
-						"message": userInput.Message,
-					})
-
-					// Resume polling
-					if adp != nil {
-						e.pollSubtask(taskCtx, *task, stCopy, agent, handle, subtasks, agents, statusChangeCh)
+						return
 					}
 				}
-			}()
-		}
+
+				// Resume to running status
+				_, _ = e.DB.Exec(taskCtx, `UPDATE subtasks SET status = 'running' WHERE id = $1`, stCopy.ID)
+				e.publishEvent(taskCtx, taskID, stCopy.ID, "subtask.input_provided", "user", "", map[string]any{
+					"message": userInput.Message,
+				})
+
+				// Resume polling
+				if adp != nil {
+					e.pollSubtask(taskCtx, *task, stCopy, agent, handle, subtasks, agents, statusChangeCh)
+				}
+			}
+		}()
 	}
 
 	// Re-enter the DAG loop to pick up any remaining work
