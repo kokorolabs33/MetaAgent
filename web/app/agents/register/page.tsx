@@ -11,7 +11,7 @@ import type { Agent } from "@/lib/types";
 
 export default function RegisterAgentPage() {
   const router = useRouter();
-  const { orgs, loadOrgs } = useOrgStore();
+  const { orgs, currentOrg, loadOrgs, selectOrg } = useOrgStore();
   const { registerAgent } = useAgentStore();
 
   const orgId = useMemo(
@@ -30,12 +30,14 @@ export default function RegisterAgentPage() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Load orgs if needed
+  // Load orgs and select the first one if needed
   useEffect(() => {
     if (orgs.length === 0) {
       loadOrgs();
+    } else if (!currentOrg && orgs.length > 0) {
+      void selectOrg(orgs[0].id);
     }
-  }, [orgs.length, loadOrgs]);
+  }, [orgs, currentOrg, loadOrgs, selectOrg]);
 
   const handleSubmit = useCallback(
     async (e: React.FormEvent) => {
