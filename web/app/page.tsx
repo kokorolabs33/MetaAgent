@@ -1,10 +1,10 @@
 "use client";
 
 import { useEffect } from "react";
-import { useTaskHubStore } from "@/lib/store";
+import { useOrgStore } from "@/lib/store";
 
 export default function Home() {
-  const { loadOrgs, orgs, isLoading } = useTaskHubStore();
+  const { loadOrgs, orgs, isLoading } = useOrgStore();
 
   useEffect(() => {
     loadOrgs();
