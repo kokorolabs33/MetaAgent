@@ -33,3 +33,6 @@ npm-debug.log*
 coverage/
 *.cover
 *.out
+
+# === Worktrees ===
+.worktrees/
