@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { LayoutDashboard, Bot } from "lucide-react";
@@ -15,10 +16,8 @@ export function Nav() {
 
   return (
     <aside className="flex h-screen w-60 flex-col border-r border-border bg-gray-950">
-      <div className="flex items-center gap-2 px-5 py-5">
-        <div className="flex size-7 items-center justify-center rounded-lg bg-primary">
-          <span className="text-xs font-bold text-primary-foreground">TH</span>
-        </div>
+      <div className="flex items-center gap-2.5 px-5 py-5">
+        <Image src="/logo.svg" alt="TaskHub" width={28} height={28} />
         <span className="text-sm font-semibold text-white">TaskHub</span>
       </div>
 
