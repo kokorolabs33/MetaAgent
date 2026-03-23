@@ -15,7 +15,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { DAGView } from "@/components/task/DAGView";
 import { GroupChat } from "@/components/chat/GroupChat";
-import { useOrgStore, useTaskStore } from "@/lib/store";
+import { useOrgStore, useTaskStore, useAgentStore } from "@/lib/store";
 import type { Task } from "@/lib/types";
 
 const statusConfig: Record<
@@ -63,6 +63,7 @@ export default function TaskDetailPage() {
     connectSSE,
     disconnectSSE,
   } = useTaskStore();
+  const { agents: allAgents, loadAgents } = useAgentStore();
 
   const [costData, setCostData] = useState<{
     total_cost_usd: number;
@@ -83,11 +84,18 @@ export default function TaskDetailPage() {
     }
   }, [orgs.length, loadOrgs]);
 
+  // Load agents for this org
+  useEffect(() => {
+    if (orgId && allAgents.length === 0) {
+      void loadAgents(orgId);
+    }
+  }, [orgId, allAgents.length, loadAgents]);
+
   // Load task + messages and connect SSE
   useEffect(() => {
     if (!orgId) return;
 
-    selectTask(orgId, taskId);
+    void selectTask(orgId, taskId);
     connectSSE(orgId, taskId);
 
     return () => {
@@ -136,17 +144,19 @@ export default function TaskDetailPage() {
     }
   }, [orgId, taskId, cancelTask, isCancelling]);
 
-  // Build agent list from subtasks for the chat @mention dropdown
-  const agents = useMemo(() => {
+  // Build agent list from subtasks — resolve names via agent store
+  const taskAgents = useMemo(() => {
     if (!currentTask?.subtasks) return [];
-    const agentMap = new Map<string, string>();
+    const seen = new Set<string>();
+    const result: { id: string; name: string }[] = [];
     for (const st of currentTask.subtasks) {
-      if (!agentMap.has(st.agent_id)) {
-        agentMap.set(st.agent_id, st.agent_id);
-      }
+      if (seen.has(st.agent_id)) continue;
+      seen.add(st.agent_id);
+      const agent = allAgents.find((a) => a.id === st.agent_id);
+      result.push({ id: st.agent_id, name: agent?.name ?? st.agent_id });
     }
-    return Array.from(agentMap.entries()).map(([id, name]) => ({ id, name }));
-  }, [currentTask?.subtasks]);
+    return result;
+  }, [currentTask?.subtasks, allAgents]);
 
   // Loading state
   if (isLoading || !currentTask) {
@@ -195,16 +205,35 @@ export default function TaskDetailPage() {
       {/* Main content: DAG + Chat split */}
       <div className="flex flex-1 overflow-hidden">
         {/* DAG view (left 40%) */}
-        <div className="w-2/5 border-r border-border">
-          <DAGView
-            subtasks={currentTask.subtasks}
-            onNodeClick={(subtaskId) => {
-              // Best effort: try to scroll chat to related messages
-              // This is a simple implementation that logs the click
-              const _id = subtaskId;
-              void _id;
-            }}
-          />
+        <div className="flex w-2/5 flex-col border-r border-border">
+          {/* Participating agents header */}
+          {taskAgents.length > 0 && (
+            <div className="border-b border-border px-3 py-2">
+              <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                Agents ({taskAgents.length})
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                {taskAgents.map((a) => (
+                  <div
+                    key={a.id}
+                    className="flex items-center gap-1.5 rounded-full bg-blue-600/20 px-2.5 py-0.5 text-xs text-blue-300"
+                  >
+                    <div className="size-2 rounded-full bg-blue-500" />
+                    {a.name}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          <div className="flex-1">
+            <DAGView
+              subtasks={currentTask.subtasks}
+              onNodeClick={(subtaskId) => {
+                const _id = subtaskId;
+                void _id;
+              }}
+            />
+          </div>
         </div>
 
         {/* Group chat (right 60%) */}
@@ -214,7 +243,7 @@ export default function TaskDetailPage() {
               orgId={orgId}
               taskId={taskId}
               messages={messages}
-              agents={agents}
+              agents={taskAgents}
               subtasks={currentTask.subtasks}
             />
           )}
