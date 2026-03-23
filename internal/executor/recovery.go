@@ -103,9 +103,10 @@ func (e *DAGExecutor) resumeTask(parentCtx context.Context, taskID string) error
 		agentMap[a.ID] = a
 	}
 
-	// Create cancellable context for this task
+	// Create cancellable context for this task.
+	// Note: runDAGLoop owns the cancel lifecycle (Store+Delete), so we just
+	// create the context here for recovery checks.
 	taskCtx, taskCancel := context.WithCancel(parentCtx)
-	e.cancels.Store(taskID, taskCancel)
 
 	var wg sync.WaitGroup
 
@@ -172,14 +173,11 @@ func (e *DAGExecutor) resumeTask(parentCtx context.Context, taskID string) error
 	// Wait for all recovery checks to complete
 	wg.Wait()
 
-	// Re-enter the DAG loop to pick up any remaining work
-	err = e.runDAGLoop(taskCtx, *task, subtasks, agents)
-
-	// Clean up
-	taskCancel()
-	e.cancels.Delete(taskID)
-
-	return err
+	// Re-enter the DAG loop to pick up any remaining work.
+	// runDAGLoop creates its own child context and manages cancels Store/Delete.
+	// Cancel our recovery context once the DAG loop returns.
+	defer taskCancel()
+	return e.runDAGLoop(taskCtx, *task, subtasks, agents)
 }
 
 // loadTask loads a single task from the database.

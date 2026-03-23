@@ -61,7 +61,8 @@ func main() {
 	// Handlers
 	orgH := &handlers.OrgHandler{DB: pool}
 	memberH := &handlers.MemberHandler{DB: pool}
-	agentH := &handlers.AgentHandler{DB: pool}
+	a2aResolver := a2a.NewResolver()
+	agentH := &handlers.AgentHandler{DB: pool, Resolver: a2aResolver}
 
 	// Execution engine
 	eventStore := &events.Store{DB: pool}

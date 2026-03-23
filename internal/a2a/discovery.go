@@ -47,18 +47,29 @@ type DiscoveredAgent struct {
 	RawCard      json.RawMessage `json:"raw_card"`
 }
 
+// Resolver performs AgentCard discovery using a shared HTTP client.
+type Resolver struct {
+	HTTPClient *http.Client
+}
+
+// NewResolver creates a Resolver with a shared HTTP client.
+func NewResolver() *Resolver {
+	return &Resolver{
+		HTTPClient: &http.Client{Timeout: 10 * time.Second},
+	}
+}
+
 // Discover fetches and validates an AgentCard from the given base URL.
-func Discover(ctx context.Context, baseURL string) (*DiscoveredAgent, error) {
+func (r *Resolver) Discover(ctx context.Context, baseURL string) (*DiscoveredAgent, error) {
 	cardURL := strings.TrimRight(baseURL, "/") + "/.well-known/agent-card.json"
 
-	client := &http.Client{Timeout: 10 * time.Second}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, cardURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
 	req.Header.Set("Accept", "application/json")
 
-	resp, err := client.Do(req)
+	resp, err := r.HTTPClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("fetch agent card from %s: %w", cardURL, err)
 	}

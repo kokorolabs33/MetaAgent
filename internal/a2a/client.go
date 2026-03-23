@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"sync/atomic"
 	"time"
@@ -234,9 +235,23 @@ func (c *Client) parseTaskResult(raw json.RawMessage) (*SendResult, error) {
 			}
 		}
 		if len(artifactData) == 1 {
-			result.Artifacts, _ = json.Marshal(artifactData[0])
+			b, err := json.Marshal(artifactData[0])
+			if err != nil {
+				log.Printf("a2a: marshal artifact: %v", err)
+				result.Artifacts = nil
+				result.Error = fmt.Sprintf("marshal artifact: %v", err)
+			} else {
+				result.Artifacts = b
+			}
 		} else if len(artifactData) > 1 {
-			result.Artifacts, _ = json.Marshal(artifactData)
+			b, err := json.Marshal(artifactData)
+			if err != nil {
+				log.Printf("a2a: marshal artifacts: %v", err)
+				result.Artifacts = nil
+				result.Error = fmt.Sprintf("marshal artifacts: %v", err)
+			} else {
+				result.Artifacts = b
+			}
 		}
 	}
 

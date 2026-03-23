@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -17,7 +18,8 @@ import (
 
 // AgentHandler provides HTTP handlers for agent CRUD operations.
 type AgentHandler struct {
-	DB *pgxpool.Pool
+	DB       *pgxpool.Pool
+	Resolver *a2a.Resolver
 }
 
 // agentColumns is the SELECT column list for agents (order must match scanAgent).
@@ -126,7 +128,7 @@ func (h *AgentHandler) Create(w http.ResponseWriter, r *http.Request) {
 	var skills json.RawMessage
 	var cardFetchedAt *time.Time
 
-	discovered, err := a2a.Discover(r.Context(), req.Endpoint)
+	discovered, err := h.Resolver.Discover(r.Context(), req.Endpoint)
 	if err == nil {
 		agentCardURL = strings.TrimRight(req.Endpoint, "/") + "/.well-known/agent-card.json"
 		agentCard = discovered.RawCard
@@ -262,6 +264,9 @@ func (h *AgentHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Track whether endpoint is changing for agent card refresh.
+	oldEndpoint := agent.Endpoint
+
 	// Apply changes.
 	if req.Name != nil {
 		name := strings.TrimSpace(*req.Name)
@@ -299,13 +304,57 @@ func (h *AgentHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, err = h.DB.Exec(r.Context(),
-		`UPDATE agents SET
-			name = $1, version = $2, description = $3, endpoint = $4,
-			capabilities = $5, status = $6, updated_at = NOW()
-		 WHERE id = $7 AND org_id = $8`,
-		agent.Name, agent.Version, agent.Description, agent.Endpoint,
-		capsJSON, agent.Status, id, org.ID)
+	// If endpoint changed, re-discover the agent card.
+	endpointChanged := agent.Endpoint != oldEndpoint
+	agentCard := agent.AgentCard
+	agentCardURL := agent.AgentCardURL
+	skills := agent.Skills
+	var cardFetchedAt *time.Time
+
+	if endpointChanged {
+		discovered, discoverErr := h.Resolver.Discover(r.Context(), agent.Endpoint)
+		if discoverErr != nil {
+			log.Printf("agents: re-discover agent card for %s after endpoint change: %v", id, discoverErr)
+			// Still allow the update; just clear stale card data.
+			agentCard = json.RawMessage("{}")
+			agentCardURL = ""
+			skills = json.RawMessage("[]")
+			cardFetchedAt = nil
+		} else {
+			agentCard = discovered.RawCard
+			agentCardURL = strings.TrimRight(agent.Endpoint, "/") + "/.well-known/agent-card.json"
+			fetchTime := time.Now().UTC()
+			cardFetchedAt = &fetchTime
+			skillsJSON, _ := json.Marshal(discovered.Skills)
+			skills = json.RawMessage(skillsJSON)
+		}
+		agent.AgentCard = agentCard
+		agent.AgentCardURL = agentCardURL
+		agent.Skills = skills
+		agent.CardFetchedAt = cardFetchedAt
+	}
+
+	if endpointChanged {
+		_, err = h.DB.Exec(r.Context(),
+			`UPDATE agents SET
+				name = $1, version = $2, description = $3, endpoint = $4,
+				capabilities = $5, status = $6,
+				agent_card_url = $7, agent_card = $8, card_fetched_at = $9, skills = $10,
+				updated_at = NOW()
+			 WHERE id = $11 AND org_id = $12`,
+			agent.Name, agent.Version, agent.Description, agent.Endpoint,
+			capsJSON, agent.Status,
+			agentCardURL, agentCard, cardFetchedAt, skills,
+			id, org.ID)
+	} else {
+		_, err = h.DB.Exec(r.Context(),
+			`UPDATE agents SET
+				name = $1, version = $2, description = $3, endpoint = $4,
+				capabilities = $5, status = $6, updated_at = NOW()
+			 WHERE id = $7 AND org_id = $8`,
+			agent.Name, agent.Version, agent.Description, agent.Endpoint,
+			capsJSON, agent.Status, id, org.ID)
+	}
 	if err != nil {
 		if strings.Contains(err.Error(), "duplicate") || strings.Contains(err.Error(), "unique") {
 			jsonError(w, "agent name already exists in this organization", http.StatusConflict)
@@ -364,7 +413,7 @@ func (h *AgentHandler) Healthcheck(w http.ResponseWriter, r *http.Request) {
 	}
 
 	start := time.Now()
-	_, discoverErr := a2a.Discover(r.Context(), agent.Endpoint)
+	_, discoverErr := h.Resolver.Discover(r.Context(), agent.Endpoint)
 	latency := time.Since(start).Milliseconds()
 
 	if discoverErr != nil {
@@ -392,7 +441,7 @@ func (h *AgentHandler) TestEndpoint(w http.ResponseWriter, r *http.Request) {
 	}
 
 	start := time.Now()
-	_, discoverErr := a2a.Discover(r.Context(), endpoint)
+	_, discoverErr := h.Resolver.Discover(r.Context(), endpoint)
 	latency := time.Since(start).Milliseconds()
 
 	if discoverErr != nil {
@@ -419,7 +468,7 @@ func (h *AgentHandler) Discover(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	discovered, err := a2a.Discover(r.Context(), url)
+	discovered, err := h.Resolver.Discover(r.Context(), url)
 	if err != nil {
 		jsonError(w, err.Error(), http.StatusBadGateway)
 		return

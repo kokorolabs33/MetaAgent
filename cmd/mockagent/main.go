@@ -282,19 +282,13 @@ func handleSendMessage(w http.ResponseWriter, req jsonRPCRequest) {
 
 	case strings.HasPrefix(instruction, "slow:"):
 		n := parseIntSuffix(instruction, "slow:")
-		ts.Status = "working"
-		tasks.Store(taskID, ts)
 
-		// Simulate slow processing in a goroutine; respond immediately as working
-		go func() {
-			time.Sleep(time.Duration(n) * time.Second)
-			ts.mu.Lock()
-			defer ts.mu.Unlock()
-			if ts.Status == "working" {
-				ts.Status = "completed"
-				ts.Result = fmt.Sprintf("completed after %d seconds", n)
-			}
-		}()
+		// Simulate slow processing synchronously before returning
+		time.Sleep(time.Duration(n) * time.Second)
+
+		ts.Status = "completed"
+		ts.Result = fmt.Sprintf("completed after %d seconds", n)
+		tasks.Store(taskID, ts)
 
 		writeRPCResult(w, req.ID, a2aTask{
 			ID:        taskID,
