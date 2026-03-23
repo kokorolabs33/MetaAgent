@@ -1,28 +1,39 @@
-// SSE connection manager — V2 placeholder
-// Will be updated when event streaming is implemented
+const BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8080";
 
-export interface SSEEvent<T = unknown> {
+export type SSEEventHandler = (event: {
+  id: string;
   type: string;
-  data: T;
-}
+  data: Record<string, unknown>;
+}) => void;
 
-type SSEHandler = (event: SSEEvent) => void;
+export function connectSSE(
+  orgId: string,
+  taskId: string,
+  onEvent: SSEEventHandler,
+  onError?: (error: Event) => void,
+): () => void {
+  const url = `${BASE}/api/orgs/${orgId}/tasks/${taskId}/events`;
+  const eventSource = new EventSource(url, { withCredentials: true });
 
-export function connectSSE(url: string, onEvent: SSEHandler): () => void {
-  const source = new EventSource(url);
-
-  source.onmessage = (e) => {
+  eventSource.onmessage = (e: MessageEvent) => {
     try {
-      const event: SSEEvent = JSON.parse(e.data as string);
-      onEvent(event);
+      const parsed = JSON.parse(e.data as string) as Record<string, unknown>;
+      onEvent({
+        id: e.lastEventId,
+        type: parsed.type as string,
+        data: (parsed.data as Record<string, unknown>) ?? parsed,
+      });
     } catch {
-      console.error("SSE parse error:", e.data);
+      // ignore malformed events
     }
   };
 
-  source.onerror = (e) => {
-    console.error("SSE error:", e);
+  eventSource.onerror = (e: Event) => {
+    if (onError) onError(e);
+    // EventSource auto-reconnects with Last-Event-ID header
   };
 
-  return () => source.close();
+  return () => {
+    eventSource.close();
+  };
 }
