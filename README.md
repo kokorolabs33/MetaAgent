@@ -28,9 +28,7 @@ TaskHub is an open-source platform for orchestrating AI agents across your organ
 
 > **Community Edition** — This is the open-source community version of TaskHub, designed for single-workspace use. Organization-level multi-tenant agent orchestration (team management, RBAC, SSO, billing) is on the roadmap.
 
-<!-- TODO: Add hero screenshot
-![TaskHub Dashboard](docs/images/dashboard.png)
--->
+![TaskHub Dashboard](docs/images/task-dashboard.png)
 
 ## Why TaskHub?
 
@@ -65,10 +63,13 @@ TaskHub solves this by providing a unified orchestration layer that works with a
 - **Budget Control** — Set monthly spend limits. Execution halts when budget is exceeded.
 - **Credential Encryption** — Agent auth tokens encrypted at rest with AES-256-GCM.
 
-<!-- TODO: Add screenshots
-![Task Detail - DAG + Chat](docs/images/task-detail.png)
-![Agent Registration](docs/images/agent-register.png)
--->
+![Task Detail — DAG Pipeline + Group Chat](docs/images/task-details.png)
+
+*Task detail view: DAG pipeline visualization on the left showing parallel agent execution (finance, marketing, operations → executive summary). Group chat on the right with real-time agent messages and results.*
+
+![Agent Registry](docs/images/agent-dashboard.png)
+
+*Agent registry: 7 enterprise agents registered with capabilities, endpoints, and health status.*
 
 ## Architecture
 
