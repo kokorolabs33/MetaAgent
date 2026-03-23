@@ -122,7 +122,7 @@ func buildAgentDescription(agents []models.Agent) string {
 
 // callLLM uses the claude CLI for MVP. Replace with Anthropic Go SDK later.
 func callLLM(ctx context.Context, systemPrompt, userMsg string) (string, error) {
-	cmd := exec.CommandContext(ctx, "claude", "--print", "-s", systemPrompt, userMsg)
+	cmd := exec.CommandContext(ctx, "claude", "--print", "--system-prompt", systemPrompt, "--output-format", "text", userMsg)
 	out, err := cmd.Output()
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
