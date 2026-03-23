@@ -1,41 +1,71 @@
 <p align="center">
   <h1 align="center">TaskHub</h1>
   <p align="center">
-    <strong>Orchestrate, manage, and govern AI agents — Kubernetes for Agents.</strong>
+    <strong>Open-source AI agent orchestration platform.</strong>
+    <br />
+    <em>Kubernetes for AI Agents — orchestrate, manage, and govern agent workflows at scale.</em>
   </p>
   <p align="center">
     <a href="#quick-start">Quick Start</a> &bull;
     <a href="#features">Features</a> &bull;
     <a href="#architecture">Architecture</a> &bull;
-    <a href="#documentation">Docs</a> &bull;
+    <a href="#agent-protocol">Agent Protocol</a> &bull;
     <a href="#contributing">Contributing</a>
+  </p>
+  <p align="center">
+    <img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License" />
+    <img src="https://img.shields.io/badge/go-1.22+-00ADD8.svg" alt="Go" />
+    <img src="https://img.shields.io/badge/next.js-15-black.svg" alt="Next.js" />
+    <img src="https://img.shields.io/badge/status-community%20edition-green.svg" alt="Community Edition" />
   </p>
 </p>
 
 ---
 
-TaskHub is an open-source platform for unified orchestration, management, and governance of AI agents. Think of it as **Kubernetes, but for AI agents and tasks** — you describe what you want done, and TaskHub decomposes it into subtasks, routes them to the right agents, manages execution, and streams results back in real-time.
+TaskHub is an open-source platform for orchestrating AI agents across your organization. You describe what needs to be done — TaskHub decomposes it into a DAG of subtasks, routes them to the right agents, manages execution with retries and human-in-the-loop, and streams results back in real-time.
 
-**TaskHub does not run agents.** It orchestrates them. Your agents live wherever they are — any HTTP endpoint that can accept a task and return results can be plugged into TaskHub via adapters.
+**TaskHub does not run agents.** It orchestrates them. Your agents live wherever they are — any HTTP service that can accept a task and return results can be plugged in via adapters, with zero code changes to your agent.
+
+> **Community Edition** — This is the open-source community version of TaskHub, designed for single-workspace use. Organization-level multi-tenant agent orchestration (team management, RBAC, SSO, billing) is on the roadmap.
 
 <!-- TODO: Add hero screenshot
 ![TaskHub Dashboard](docs/images/dashboard.png)
 -->
 
+## Why TaskHub?
+
+AI agents are everywhere, but running them in production is chaos:
+
+- **Fragmented interfaces** — Every agent has a different API, input/output format, and lifecycle model
+- **No control plane** — Which agents are running? Which one failed? Which one costs the most?
+- **Manual orchestration** — Coordinating multi-agent workflows requires custom glue code
+- **Stateful agents, stateless infra** — Long-running agent tasks need checkpointing, retry, and recovery
+- **Zero governance** — No audit trail, no budget control, no access management
+
+TaskHub solves this by providing a unified orchestration layer that works with any agent.
+
 ## Features
+
+### Core
 
 - **Agent Registry** — Register any external agent with a simple HTTP endpoint. No SDK required, no agent modification needed.
 - **DAG Execution** — Tasks are automatically decomposed into subtask DAGs. Parallel when possible, sequential when dependent.
 - **Adapter System** — Plug in any agent via configurable HTTP polling adapters or the native TaskHub protocol. JSONPath mapping for custom APIs.
 - **Real-time Streaming** — SSE-based event stream with persistent event store. Browser auto-reconnect with zero event loss.
-- **Group Chat** — Every task gets a chat room. Agents and users communicate via @mentions. Agents can request human input mid-execution.
-- **Human-in-the-Loop** — Agents can pause and ask for confirmation. Users @reply in the chat to continue execution.
-- **DAG Visualization** — React Flow pipeline view showing subtask status, dependencies, and progress in real-time.
-- **Audit & Cost Tracking** — Every LLM call and agent invocation is logged with token counts and cost estimates.
-- **Budget Control** — Set monthly spend limits per organization. Execution halts when budget is exceeded.
-- **RBAC** — Organization-based multi-tenancy with four roles: owner, admin, member, viewer.
 
-<!-- TODO: Add feature screenshots
+### Collaboration
+
+- **Group Chat** — Every task gets a chat room. Agents and users communicate via @mentions.
+- **Human-in-the-Loop** — Agents can pause execution and ask for confirmation. Users @reply in chat to continue.
+- **DAG Visualization** — React Flow pipeline view showing subtask status, dependencies, and progress in real-time.
+
+### Governance
+
+- **Audit Trail** — Every LLM call and agent invocation is logged with token counts, latency, and cost estimates.
+- **Budget Control** — Set monthly spend limits. Execution halts when budget is exceeded.
+- **Credential Encryption** — Agent auth tokens encrypted at rest with AES-256-GCM.
+
+<!-- TODO: Add screenshots
 ![Task Detail - DAG + Chat](docs/images/task-detail.png)
 ![Agent Registration](docs/images/agent-register.png)
 -->
@@ -45,37 +75,38 @@ TaskHub is an open-source platform for unified orchestration, management, and go
 ```
 User → Frontend (Next.js) → Backend API (Go/chi)
                                     │
-                              ┌─────┴─────┐
-                              │ Orchestrator│  ← LLM decomposes tasks
-                              └─────┬─────┘
+                              ┌─────┴──────┐
+                              │ Orchestrator │  ← LLM decomposes tasks into DAG
+                              └─────┬──────┘
                                     │
-                              ┌─────┴─────┐
-                              │ DAG Executor│  ← Manages subtask lifecycle
-                              └─────┬─────┘
+                              ┌─────┴──────┐
+                              │ DAG Executor │  ← Polls agents, manages lifecycle
+                              └─────┬──────┘
                                     │
                     ┌───────────────┼───────────────┐
                     │               │               │
               ┌─────┴─────┐  ┌─────┴─────┐  ┌─────┴─────┐
               │  Agent A   │  │  Agent B   │  │  Agent C   │
-              │ (external) │  │ (external) │  │ (external) │
+              │ (your API) │  │ (your API) │  │ (your API) │
               └───────────┘  └───────────┘  └───────────┘
 ```
 
-**Key design principles:**
+**Design principles:**
 
-- **Agents are external** — TaskHub orchestrates, it doesn't run agent code. Agents are HTTP services you register.
-- **Adapter pattern** — Any HTTP API can be an agent. Configure JSON request/response mapping, no code changes to your agent.
-- **Event-sourced** — Every state change is persisted as an event. Full replay, audit trail, and real-time SSE streaming.
-- **Temporal-ready** — The executor interface is designed to swap in Temporal for durable execution when you outgrow the simple goroutine-based executor.
+| Principle | Description |
+|-----------|-------------|
+| **Agents are external** | TaskHub orchestrates, it doesn't run agent code. Agents are HTTP services you own. |
+| **Adapter pattern** | Any HTTP API can be an agent. Configure JSON request/response mapping — zero code changes to your agent. |
+| **Event-sourced** | Every state change is persisted. Full replay, audit trail, and real-time SSE streaming. |
+| **Temporal-ready** | The executor interface is designed to swap in Temporal for durable execution when needed. |
 
 ## Quick Start
 
 ### Prerequisites
 
 - Go 1.22+
-- Node.js 22+
+- Node.js 22+ and pnpm
 - PostgreSQL 15+
-- pnpm
 
 ### 1. Clone and install
 
@@ -91,55 +122,55 @@ make install
 createdb taskhub
 ```
 
-### 3. Start the backend
+### 3. Start everything
 
 ```bash
+# Terminal 1: Backend
 make dev-backend
-```
 
-The server starts on `http://localhost:8080` in **local mode** — no authentication required, a default workspace is created automatically.
-
-### 4. Start the frontend
-
-```bash
+# Terminal 2: Frontend
 make dev-frontend
-```
 
-Open `http://localhost:3000` in your browser.
-
-### 5. Start the mock agent (for testing)
-
-```bash
+# Terminal 3: Mock agent (for testing)
 go run ./cmd/mockagent
 ```
 
-The mock agent listens on `http://localhost:9090` and simulates various agent behaviors for testing.
+Open **http://localhost:3000** — no login required in local mode.
 
-### 6. Register an agent and create a task
+### 4. Try it out
 
-1. Go to **Agents** → **Register Agent**
-2. Name: `mock-agent`, Endpoint: `http://localhost:9090`, Adapter Type: `Native`
-3. Click **Test Connection** to verify, then **Register**
-4. Go to **Dashboard** → **New Task**
-5. Enter a title and description, and watch the DAG execute in real-time
+1. **Register an agent:** Go to Agents → Register Agent. Name: `mock-agent`, Endpoint: `http://localhost:9090`, Type: `Native`. Click Test Connection, then Register.
+2. **Create a task:** Go to Dashboard → New Task. Describe what you want done.
+3. **Watch it execute:** The orchestrator decomposes your task, assigns subtasks to agents, and streams results in real-time via the DAG view and group chat.
 
 ## Agent Protocol
 
-TaskHub supports two ways to connect agents:
+### Option 1: Native Protocol (easiest)
 
-### Native Protocol (simplest)
-
-Your agent implements three endpoints:
+Implement three endpoints on your agent:
 
 ```
-POST /tasks              → Accept task, return { "job_id": "..." }
-GET  /tasks/{id}/status  → Return { "status": "running|completed|failed|needs_input", ... }
+POST /tasks              → Accept a task, return { "job_id": "..." }
+GET  /tasks/{id}/status  → Return current status
 POST /tasks/{id}/input   → Receive user input (optional)
 ```
 
-### HTTP Poll Adapter (zero agent changes)
+Status response:
 
-For existing APIs, configure a JSON mapping in the agent registration:
+```json
+{
+  "status": "running",
+  "progress": 0.65,
+  "messages": [{"content": "Analyzing data..."}],
+  "result": null
+}
+```
+
+Status values: `running` | `completed` | `failed` | `needs_input`
+
+### Option 2: HTTP Poll Adapter (zero agent changes)
+
+Already have an API? Configure a JSON mapping when registering:
 
 ```json
 {
@@ -150,6 +181,7 @@ For existing APIs, configure a JSON mapping in the agent registration:
     "job_id_path": "$.id"
   },
   "poll": {
+    "method": "GET",
     "path": "/v1/jobs/{{job_id}}",
     "status_path": "$.state",
     "status_map": { "processing": "running", "done": "completed" },
@@ -158,7 +190,7 @@ For existing APIs, configure a JSON mapping in the agent registration:
 }
 ```
 
-No changes to your agent required — TaskHub adapts to your API.
+TaskHub adapts to your API — your agent doesn't need to change anything.
 
 ## Tech Stack
 
@@ -166,11 +198,10 @@ No changes to your agent required — TaskHub adapts to your API.
 |-------|-----------|
 | Backend | Go, chi router, pgx (PostgreSQL) |
 | Frontend | Next.js 15, React 19, Tailwind CSS 4, Zustand |
-| Visualization | React Flow (DAG pipeline) |
+| Visualization | React Flow |
 | UI Components | shadcn/ui |
-| Database | PostgreSQL |
+| Database | PostgreSQL (13 tables, event-sourced) |
 | Real-time | Server-Sent Events (SSE) |
-| Orchestration | Claude CLI (MVP), swappable LLM provider |
 
 ## Project Structure
 
@@ -180,89 +211,76 @@ taskhub/
 │   ├── server/         # API server
 │   └── mockagent/      # Mock agent for testing
 ├── internal/
-│   ├── adapter/        # Agent adapter layer (HTTP poll, native)
+│   ├── adapter/        # Agent adapters (HTTP poll, native protocol)
 │   ├── audit/          # Audit logging + cost tracking
-│   ├── auth/           # Authentication middleware + session store
+│   ├── auth/           # Authentication (local mode + OAuth ready)
 │   ├── config/         # Environment configuration
 │   ├── crypto/         # AES-256-GCM credential encryption
-│   ├── ctxutil/        # Request context helpers
-│   ├── db/             # Database connection + migrations
+│   ├── db/             # PostgreSQL connection + migrations
 │   ├── events/         # Event store + SSE broker
-│   ├── executor/       # DAG execution engine
-│   ├── handlers/       # HTTP handlers
-│   ├── httputil/       # HTTP response helpers
+│   ├── executor/       # DAG execution engine + crash recovery
+│   ├── handlers/       # HTTP request handlers
 │   ├── models/         # Domain structs
 │   ├── orchestrator/   # LLM-based task decomposition
 │   ├── rbac/           # Role-based access control
 │   └── seed/           # Local mode data seeding
 ├── web/                # Next.js frontend
-│   ├── app/            # Pages (dashboard, task detail, agents)
-│   ├── components/     # React components
-│   └── lib/            # API client, SSE, Zustand stores, types
-├── Makefile
-├── Dockerfile
-└── CLAUDE.md           # AI agent development guidelines
+├── Makefile            # Build, lint, test, dev commands
+├── Dockerfile          # Multi-stage container build
+└── CLAUDE.md           # AI-assisted development guidelines
 ```
 
 ## Development
 
 ```bash
-# Run all quality checks (format + lint + typecheck + build)
-make check
-
-# Run tests
-make test
-
-# Lint
-make lint
-
-# Format
-make fmt
+make check    # Full quality gate: format + lint + typecheck + build
+make test     # Run all tests
+make lint     # Run golangci-lint + eslint
+make fmt      # Format all code
 ```
-
-### Environment Variables
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `TASKHUB_MODE` | `local` | `local` (no auth) or `cloud` (full auth) |
-| `DATABASE_URL` | `postgres://localhost:5432/taskhub?sslmode=disable` | PostgreSQL connection |
-| `PORT` | `8080` | Backend server port |
-| `FRONTEND_URL` | `http://localhost:3000` | Frontend URL (for CORS) |
-| `ANTHROPIC_API_KEY` | — | API key for LLM orchestration |
 
 ## Roadmap
 
+### Community Edition (current)
+
 - [x] Agent Registry with HTTP poll + native adapters
-- [x] DAG-based task execution with parallel subtask support
+- [x] DAG-based task execution with parallel subtasks
+- [x] LLM-powered task decomposition (orchestrator)
 - [x] Real-time SSE streaming with event persistence
 - [x] Group Chat with @mention interaction
 - [x] Human-in-the-loop (agent pauses for user input)
-- [x] Audit logging + cost tracking
-- [x] RBAC with organization-based multi-tenancy
+- [x] Audit logging + cost tracking + budget control
 - [x] Mock agent for end-to-end testing
+- [x] Local mode (zero-config, no auth needed)
 - [ ] A2A protocol adapter
 - [ ] WebSocket/streaming agent support
 - [ ] Anthropic SDK integration (replace CLI)
-- [ ] Google OAuth authentication
-- [ ] Capability-based agent routing
-- [ ] Global memory / vector store
-- [ ] Agent marketplace
+- [ ] Capability-based automatic agent routing
+- [ ] Session memory / conversation context
 
-## Documentation
+### Organization Edition (planned)
 
-- [Design Spec](docs/superpowers/specs/2026-03-22-taskhub-v2-design.md) — Full architecture and data model specification
-- [CLAUDE.md](CLAUDE.md) — Development guidelines for AI-assisted coding
-- [SECURITY.md](SECURITY.md) — Security policy and trust model
+- [ ] Google/GitHub SSO authentication
+- [ ] Multi-tenant organization management
+- [ ] Team-based RBAC with agent-level permissions
+- [ ] Organization-wide agent marketplace
+- [ ] Cross-team agent sharing and governance
+- [ ] Advanced policy engine (rate limiting, approval workflows)
+- [ ] Cost allocation and chargeback per team
+- [ ] Enterprise audit and compliance features
 
 ## Contributing
 
-Contributions are welcome! Please read the [contributing guidelines](.github/pull_request_template.md) before submitting a PR.
+Contributions are welcome! Please see the [PR template](.github/pull_request_template.md) for guidelines.
 
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feat/my-feature`)
-3. Make your changes and ensure `make check` passes
-4. Submit a pull request
+```bash
+# Fork, clone, then:
+git checkout -b feat/my-feature
+# Make changes, ensure quality gate passes:
+make check
+# Submit PR
+```
 
 ## License
 
-TaskHub is licensed under the [Apache License 2.0](LICENSE).
+Apache License 2.0 — see [LICENSE](LICENSE) for details.
