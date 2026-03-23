@@ -19,6 +19,7 @@ import (
 	"taskhub/internal/handlers"
 	"taskhub/internal/orchestrator"
 	"taskhub/internal/rbac"
+	"taskhub/internal/seed"
 )
 
 func main() {
@@ -46,6 +47,9 @@ func main() {
 		GoogleSecret: cfg.GoogleSecret,
 		FrontendURL:  cfg.FrontendURL,
 	}
+
+	// Dev seed (creates test user + org + session for local development)
+	seed.DevSeedAndLog(ctx, pool, sessionStore)
 
 	// RBAC
 	rbacMw := &rbac.Middleware{DB: pool}
@@ -124,6 +128,7 @@ func main() {
 			r.With(rbac.RequireRole("admin")).Put("/agents/{id}", agentH.Update)
 			r.With(rbac.RequireRole("admin")).Delete("/agents/{id}", agentH.Delete)
 			r.Post("/agents/{id}/healthcheck", agentH.Healthcheck)
+			r.Post("/agents/test-endpoint", agentH.TestEndpoint)
 
 			// Tasks
 			r.With(rbac.RequireRole("member")).Post("/tasks", taskH.Create)

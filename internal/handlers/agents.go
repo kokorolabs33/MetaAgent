@@ -399,6 +399,37 @@ func (h *AgentHandler) Healthcheck(w http.ResponseWriter, r *http.Request) {
 	jsonOK(w, healthcheckResponse{Status: resp.StatusCode, LatencyMs: latency})
 }
 
+// TestEndpoint tests connectivity to an arbitrary endpoint (no saved agent required).
+// Used by the register form to validate before saving.
+func (h *AgentHandler) TestEndpoint(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Endpoint string `json:"endpoint"`
+	}
+	if err := decodeJSON(w, r, &req); err != nil {
+		jsonError(w, "invalid body", http.StatusBadRequest)
+		return
+	}
+	endpoint := strings.TrimSpace(req.Endpoint)
+	if endpoint == "" {
+		jsonError(w, "endpoint is required", http.StatusBadRequest)
+		return
+	}
+
+	healthURL := strings.TrimRight(endpoint, "/") + "/health"
+	client := &http.Client{Timeout: 5 * time.Second}
+	start := time.Now()
+	resp, err := client.Get(healthURL)
+	latency := time.Since(start).Milliseconds()
+
+	if err != nil {
+		jsonOK(w, healthcheckResponse{Status: 0, LatencyMs: latency})
+		return
+	}
+	defer resp.Body.Close()
+
+	jsonOK(w, healthcheckResponse{Status: resp.StatusCode, LatencyMs: latency})
+}
+
 // defaultJSON returns raw if it is non-nil and non-empty, otherwise returns the fallback as RawMessage.
 func defaultJSON(raw json.RawMessage, fallback string) json.RawMessage {
 	if len(raw) == 0 {

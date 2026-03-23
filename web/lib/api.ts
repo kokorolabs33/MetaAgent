@@ -85,6 +85,11 @@ export const api = {
         `/api/orgs/${orgId}/agents/${id}/healthcheck`,
         {},
       ),
+    testEndpoint: (orgId: string, endpoint: string) =>
+      post<{ status: number; latency_ms: number }>(
+        `/api/orgs/${orgId}/agents/test-endpoint`,
+        { endpoint },
+      ),
   },
   tasks: {
     list: (orgId: string, status?: string) => {

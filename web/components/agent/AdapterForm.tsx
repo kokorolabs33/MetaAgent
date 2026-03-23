@@ -66,13 +66,18 @@ export function AdapterForm({ value, onChange }: AdapterFormProps) {
           message: `Status ${result.status} (${result.latency_ms}ms)`,
         });
       } else {
-        // Agent not saved yet — directly test the endpoint/health
-        const start = Date.now();
-        const res = await fetch(`${endpoint}/health`);
-        const latency = Date.now() - start;
+        // Agent not saved yet — test via backend proxy
+        const { api } = await import("@/lib/api");
+        const { useOrgStore } = await import("@/lib/store");
+        const orgId = useOrgStore.getState().currentOrg?.id;
+        if (!orgId) {
+          setTestResult({ ok: false, message: "No organization selected" });
+          return;
+        }
+        const result = await api.agents.testEndpoint(orgId, endpoint);
         setTestResult({
-          ok: res.ok,
-          message: `Status ${res.status} (${latency}ms)`,
+          ok: result.status >= 200 && result.status < 300,
+          message: `Status ${result.status} (${result.latency_ms}ms)`,
         });
       }
     } catch (err) {
