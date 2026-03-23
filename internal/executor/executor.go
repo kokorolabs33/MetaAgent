@@ -185,7 +185,7 @@ func (e *DAGExecutor) createSubtasks(ctx context.Context, taskID string, plan *m
 		}
 
 		// Resolve depends_on: map plan IDs → real UUIDs
-		var deps []string
+		deps := make([]string, 0)
 		for _, depID := range ps.DependsOn {
 			realDepID, ok := idMap[depID]
 			if !ok {

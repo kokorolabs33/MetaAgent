@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -75,7 +76,11 @@ func (h *TaskHandler) Create(w http.ResponseWriter, r *http.Request) {
 
 	// Spawn executor in a background goroutine.
 	// Use context.Background() because execution outlives the HTTP request.
-	go h.Executor.Execute(context.Background(), task) //nolint:errcheck,contextcheck // errors are recorded in task status; context.Background is intentional as execution outlives the HTTP request
+	go func() { //nolint:contextcheck // context.Background is intentional as execution outlives the HTTP request
+		if err := h.Executor.Execute(context.Background(), task); err != nil {
+			log.Printf("executor: task %s failed: %v", task.ID, err)
+		}
+	}()
 
 	jsonCreated(w, task)
 }

@@ -37,7 +37,7 @@ func (s *Store) Save(ctx context.Context, taskID, subtaskID, eventType, actorTyp
 
 	_, err = s.DB.Exec(ctx,
 		`INSERT INTO events (id, task_id, subtask_id, type, actor_type, actor_id, data, created_at)
-		 VALUES ($1, $2, NULLIF($3, ''), $4, $5, NULLIF($6, ''), $7, $8)`,
+		 VALUES ($1, $2, NULLIF($3, ''), $4, $5, $6, $7, $8)`,
 		evt.ID, evt.TaskID, evt.SubtaskID, evt.Type, evt.ActorType, evt.ActorID, evt.Data, evt.CreatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("insert event: %w", err)
