@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"regexp"
 	"strings"
@@ -13,7 +14,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"taskhub/internal/adapter"
 	"taskhub/internal/ctxutil"
 	"taskhub/internal/events"
 	"taskhub/internal/executor"
@@ -85,7 +85,7 @@ func (h *MessageHandler) List(w http.ResponseWriter, r *http.Request) {
 }
 
 // Send handles POST /tasks/{id}/messages.
-// Creates a message, parses @mentions, and signals waiting subtasks if applicable.
+// Creates a message, parses @mentions, and routes to agents via A2A follow-up if applicable.
 func (h *MessageHandler) Send(w http.ResponseWriter, r *http.Request) {
 	taskID := chi.URLParam(r, "id")
 
@@ -143,60 +143,57 @@ func (h *MessageHandler) Send(w http.ResponseWriter, r *http.Request) {
 		h.Broker.Publish(evt)
 	}
 
-	// Check if any mention matches an agent with a waiting subtask.
-	// For each mentioned name, look up whether there's a waiting_for_input subtask
-	// assigned to an agent with that name.
+	// Check if any mention matches an agent with a running or input_required subtask.
 	if len(mentions) > 0 {
-		h.signalWaitingAgents(r.Context(), taskID, mentions, content)
+		h.routeToAgents(r.Context(), taskID, mentions, content)
 	}
 
 	jsonCreated(w, msg)
 }
 
-// signalWaitingAgents checks if any mentioned agent names have waiting subtasks
-// and delivers the user input via the executor's Signal method.
-func (h *MessageHandler) signalWaitingAgents(ctx context.Context, taskID string, mentions []string, content string) {
-	// Query subtasks waiting for input along with their agent names.
+// routeToAgents checks if any mentioned agent names have active subtasks
+// and sends a follow-up A2A message via the executor.
+func (h *MessageHandler) routeToAgents(ctx context.Context, taskID string, mentions []string, content string) {
+	// Query subtasks that are running or input_required along with their agent names.
 	rows, err := h.DB.Query(ctx,
 		`SELECT s.id, s.agent_id, a.name
 		 FROM subtasks s
 		 JOIN agents a ON a.id = s.agent_id
-		 WHERE s.task_id = $1 AND s.status = 'waiting_for_input'`, taskID)
+		 WHERE s.task_id = $1 AND s.status IN ('running', 'input_required')`, taskID)
 	if err != nil {
 		return
 	}
 	defer rows.Close()
 
-	type waitingSubtask struct {
+	type activeSubtask struct {
 		subtaskID string
 		agentID   string
 		agentName string
 	}
 
-	var waiting []waitingSubtask
+	var active []activeSubtask
 	for rows.Next() {
-		var ws waitingSubtask
-		if err := rows.Scan(&ws.subtaskID, &ws.agentID, &ws.agentName); err != nil {
+		var as activeSubtask
+		if err := rows.Scan(&as.subtaskID, &as.agentID, &as.agentName); err != nil {
 			continue
 		}
-		waiting = append(waiting, ws)
+		active = append(active, as)
 	}
 	if rows.Err() != nil {
 		return
 	}
 
-	// Match mentions against waiting agent names (case-insensitive).
+	// Match mentions against active agent names (case-insensitive).
 	mentionSet := make(map[string]bool, len(mentions))
 	for _, m := range mentions {
 		mentionSet[strings.ToLower(m)] = true
 	}
 
-	for _, ws := range waiting {
-		if mentionSet[strings.ToLower(ws.agentName)] {
-			_ = h.Executor.Signal(ctx, taskID, adapter.UserInput{
-				SubtaskID: ws.subtaskID,
-				Message:   fmt.Sprintf("User message: %s", content),
-			})
+	for _, as := range active {
+		if mentionSet[strings.ToLower(as.agentName)] {
+			if err := h.Executor.SendFollowUp(ctx, taskID, as.subtaskID, as.agentID, fmt.Sprintf("User message: %s", content)); err != nil {
+				log.Printf("routeToAgents: follow-up to agent %s failed: %v", as.agentName, err)
+			}
 		}
 	}
 }

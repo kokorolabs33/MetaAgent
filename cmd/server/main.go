@@ -9,7 +9,7 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
 
-	"taskhub/internal/adapter"
+	"taskhub/internal/a2a"
 	"taskhub/internal/audit"
 	"taskhub/internal/auth"
 	"taskhub/internal/config"
@@ -68,15 +68,11 @@ func main() {
 	broker := events.NewBroker()
 	auditLogger := &audit.Logger{DB: pool}
 	orch := &orchestrator.Orchestrator{}
-
-	adapters := map[string]adapter.AgentAdapter{
-		"http_poll": adapter.NewHTTPPollAdapter(),
-		"native":    adapter.NewNativeAdapter(),
-	}
+	a2aClient := a2a.NewClient()
 
 	exec := &executor.DAGExecutor{
 		DB: pool, Broker: broker, EventStore: eventStore,
-		Audit: auditLogger, Orchestrator: orch, Adapters: adapters,
+		Audit: auditLogger, Orchestrator: orch, A2AClient: a2aClient,
 	}
 	exec.Recover(ctx)
 
@@ -131,6 +127,7 @@ func main() {
 			r.With(rbac.RequireRole("admin")).Delete("/agents/{id}", agentH.Delete)
 			r.Post("/agents/{id}/healthcheck", agentH.Healthcheck)
 			r.Post("/agents/test-endpoint", agentH.TestEndpoint)
+			r.Post("/agents/discover", agentH.Discover)
 
 			// Tasks
 			r.With(rbac.RequireRole("member")).Post("/tasks", taskH.Create)

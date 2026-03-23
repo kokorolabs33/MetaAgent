@@ -230,7 +230,7 @@ func (h *TaskHandler) ListSubtasks(w http.ResponseWriter, r *http.Request) {
 func (h *TaskHandler) querySubtasks(ctx context.Context, taskID string) ([]models.SubTask, error) {
 	rows, err := h.DB.Query(ctx,
 		`SELECT id, task_id, agent_id, instruction, depends_on, status,
-			input, output, error, poll_job_id, poll_endpoint,
+			input, output, error, a2a_task_id,
 			attempt, max_attempts, created_at, started_at, completed_at
 		 FROM subtasks
 		 WHERE task_id = $1
@@ -288,11 +288,11 @@ func scanTask(scan func(dest ...any) error) (models.Task, error) {
 func scanSubtask(scan func(dest ...any) error) (models.SubTask, error) {
 	var st models.SubTask
 	var input, output []byte
-	var stError, pollJobID, pollEndpoint *string
+	var stError, a2aTaskID *string
 
 	err := scan(
 		&st.ID, &st.TaskID, &st.AgentID, &st.Instruction, &st.DependsOn, &st.Status,
-		&input, &output, &stError, &pollJobID, &pollEndpoint,
+		&input, &output, &stError, &a2aTaskID,
 		&st.Attempt, &st.MaxAttempts, &st.CreatedAt, &st.StartedAt, &st.CompletedAt,
 	)
 	if err != nil {
@@ -308,11 +308,8 @@ func scanSubtask(scan func(dest ...any) error) (models.SubTask, error) {
 	if stError != nil {
 		st.Error = *stError
 	}
-	if pollJobID != nil {
-		st.PollJobID = *pollJobID
-	}
-	if pollEndpoint != nil {
-		st.PollEndpoint = *pollEndpoint
+	if a2aTaskID != nil {
+		st.A2ATaskID = *a2aTaskID
 	}
 	if st.DependsOn == nil {
 		st.DependsOn = []string{}

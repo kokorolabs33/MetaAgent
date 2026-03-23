@@ -1,6 +1,6 @@
-// Package main implements a mock agent service for testing the TaskHub agent protocol.
-// It supports various behavior keywords in the instruction field to simulate different
-// agent scenarios (echo, slow, fail, progress, ask for input, etc.).
+// Package main implements a mock A2A agent server for testing.
+// It supports various behavior keywords in the instruction text to simulate different
+// agent scenarios (echo, slow, fail, input-required, etc.).
 package main
 
 import (
@@ -12,220 +12,411 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/google/uuid"
 )
 
-// job represents a task tracked by the mock agent.
-type job struct {
-	mu            sync.Mutex
-	ID            string   `json:"id"`
-	Status        string   `json:"status"`
-	Instruction   string   `json:"instruction"`
-	Result        string   `json:"result,omitempty"`
-	Error         string   `json:"error,omitempty"`
-	Progress      float64  `json:"progress"`
-	Messages      []string `json:"messages,omitempty"`
-	InputReceived string   `json:"input_received,omitempty"`
-	PollCount     int      `json:"poll_count"`
-	Attempts      int      `json:"attempts"`
+// ---- A2A Protocol Types ----
+
+type jsonRPCRequest struct {
+	JSONRPC string          `json:"jsonrpc"`
+	Method  string          `json:"method"`
+	ID      string          `json:"id"`
+	Params  json.RawMessage `json:"params"`
 }
 
-var jobs sync.Map
+type jsonRPCResponse struct {
+	JSONRPC string    `json:"jsonrpc"`
+	ID      string    `json:"id"`
+	Result  any       `json:"result,omitempty"`
+	Error   *rpcError `json:"error,omitempty"`
+}
+
+type rpcError struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+}
+
+type sendMessageParams struct {
+	Message   a2aMessage `json:"message"`
+	ContextID string     `json:"contextId,omitempty"`
+	TaskID    string     `json:"taskId,omitempty"`
+}
+
+type taskIDParams struct {
+	ID string `json:"id"`
+}
+
+type a2aMessage struct {
+	Role  string        `json:"role"`
+	Parts []messagePart `json:"parts"`
+}
+
+type messagePart struct {
+	Text string `json:"text,omitempty"`
+	Data any    `json:"data,omitempty"`
+}
+
+type a2aTask struct {
+	ID        string     `json:"id"`
+	ContextID string     `json:"contextId,omitempty"`
+	Status    a2aStatus  `json:"status"`
+	Artifacts []artifact `json:"artifacts,omitempty"`
+}
+
+type a2aStatus struct {
+	State   string      `json:"state"`
+	Message *a2aMessage `json:"message,omitempty"`
+}
+
+type artifact struct {
+	ArtifactID string        `json:"artifactId,omitempty"`
+	Parts      []messagePart `json:"parts,omitempty"`
+}
+
+type agentCard struct {
+	Name               string          `json:"name"`
+	Description        string          `json:"description"`
+	URL                string          `json:"url"`
+	Version            string          `json:"version"`
+	Capabilities       map[string]bool `json:"capabilities"`
+	Skills             []cardSkill     `json:"skills"`
+	DefaultInputModes  []string        `json:"defaultInputModes"`
+	DefaultOutputModes []string        `json:"defaultOutputModes"`
+}
+
+type cardSkill struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+}
+
+// ---- Task State ----
+
+type taskState struct {
+	mu          sync.Mutex
+	ID          string
+	ContextID   string
+	Status      string // "working", "completed", "failed", "input-required"
+	Instruction string
+	Result      string
+	Error       string
+}
+
+var tasks sync.Map
 
 func main() {
 	port := flag.Int("port", 9090, "listen port")
+	name := flag.String("name", "Mock Agent", "agent name")
 	flag.Parse()
+
+	baseURL := fmt.Sprintf("http://localhost:%d", *port)
 
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
 
-	r.Post("/tasks", submitTask)
-	r.Get("/tasks/{id}/status", getStatus)
-	r.Post("/tasks/{id}/input", sendInput)
-	r.Get("/health", health)
+	// A2A AgentCard discovery
+	r.Get("/.well-known/agent-card.json", func(w http.ResponseWriter, _ *http.Request) {
+		card := agentCard{
+			Name:        *name,
+			Description: "Mock agent for testing. Supports keyword-based behaviors.",
+			URL:         baseURL,
+			Version:     "1.0.0",
+			Capabilities: map[string]bool{
+				"streaming":              false,
+				"pushNotifications":      false,
+				"stateTransitionHistory": false,
+			},
+			Skills: []cardSkill{
+				{ID: "mock", Name: "Mock Behavior", Description: "Simulates various agent behaviors via keywords"},
+			},
+			DefaultInputModes:  []string{"text/plain"},
+			DefaultOutputModes: []string{"text/plain", "application/json"},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(card)
+	})
+
+	// A2A JSON-RPC endpoint
+	r.Post("/", handleJSONRPC)
+
+	// Legacy health endpoint
+	r.Get("/health", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	})
 
 	addr := fmt.Sprintf(":%d", *port)
-	log.Printf("Mock agent listening on %s", addr)
+	log.Printf("Mock A2A agent %q listening on %s", *name, addr)
 	if err := http.ListenAndServe(addr, r); err != nil {
 		log.Fatalf("listen: %v", err)
 	}
 }
 
-// submitRequest is the expected body for POST /tasks.
-type submitRequest struct {
-	TaskID      string `json:"task_id"`
-	Instruction string `json:"instruction"`
-}
-
-func submitTask(w http.ResponseWriter, r *http.Request) {
-	var req submitRequest
+func handleJSONRPC(w http.ResponseWriter, r *http.Request) {
+	var req jsonRPCRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
+		writeRPCError(w, "", -32700, "Parse error")
 		return
 	}
 
-	j := &job{
-		ID:          uuid.New().String(),
-		Status:      "running",
-		Instruction: req.Instruction,
+	switch req.Method {
+	case "message/send":
+		handleSendMessage(w, req)
+	case "tasks/get":
+		handleGetTask(w, req)
+	case "tasks/cancel":
+		handleCancelTask(w, req)
+	default:
+		writeRPCError(w, req.ID, -32601, fmt.Sprintf("Method not found: %s", req.Method))
+	}
+}
+
+func handleSendMessage(w http.ResponseWriter, req jsonRPCRequest) {
+	var params sendMessageParams
+	if err := json.Unmarshal(req.Params, &params); err != nil {
+		writeRPCError(w, req.ID, -32602, "Invalid params")
+		return
 	}
 
-	// Apply immediate-completion keywords.
-	instruction := req.Instruction
+	// Extract instruction text from message parts
+	instruction := ""
+	for _, part := range params.Message.Parts {
+		if part.Text != "" {
+			instruction = part.Text
+			break
+		}
+	}
+
+	// Check if this is a follow-up to an existing task
+	if params.TaskID != "" {
+		if val, ok := tasks.Load(params.TaskID); ok {
+			ts := val.(*taskState)
+			ts.mu.Lock()
+			defer ts.mu.Unlock()
+
+			// Follow-up message completes the task
+			ts.Status = "completed"
+			ts.Result = fmt.Sprintf("received follow-up: %s", instruction)
+
+			writeRPCResult(w, req.ID, a2aTask{
+				ID:        ts.ID,
+				ContextID: ts.ContextID,
+				Status:    a2aStatus{State: "completed"},
+				Artifacts: []artifact{{
+					ArtifactID: uuid.New().String(),
+					Parts:      []messagePart{{Text: ts.Result}},
+				}},
+			})
+			return
+		}
+	}
+
+	// New task — determine behavior from instruction keywords
+	taskID := uuid.New().String()
+	ts := &taskState{
+		ID:          taskID,
+		ContextID:   params.ContextID,
+		Instruction: instruction,
+		Status:      "working",
+	}
+
 	switch {
 	case strings.HasPrefix(instruction, "echo:"):
-		j.Status = "completed"
-		j.Result = strings.TrimPrefix(instruction, "echo:")
-		j.Progress = 1.0
+		msg := strings.TrimPrefix(instruction, "echo:")
+		ts.Status = "completed"
+		ts.Result = msg
+		tasks.Store(taskID, ts)
+
+		writeRPCResult(w, req.ID, a2aTask{
+			ID:        taskID,
+			ContextID: params.ContextID,
+			Status:    a2aStatus{State: "completed"},
+			Artifacts: []artifact{{
+				ArtifactID: uuid.New().String(),
+				Parts:      []messagePart{{Text: msg}},
+			}},
+		})
+		return
 
 	case strings.HasPrefix(instruction, "fail:"):
-		j.Status = "failed"
-		j.Error = strings.TrimPrefix(instruction, "fail:")
+		msg := strings.TrimPrefix(instruction, "fail:")
+		ts.Status = "failed"
+		ts.Error = msg
+		tasks.Store(taskID, ts)
 
-	case strings.HasPrefix(instruction, "ask:"):
-		j.Status = "needs_input"
-		msg := strings.TrimPrefix(instruction, "ask:")
-		j.Messages = []string{msg}
-	}
-
-	jobs.Store(j.ID, j)
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	_ = json.NewEncoder(w).Encode(map[string]string{"job_id": j.ID})
-}
-
-// statusResponse is the shape returned by GET /tasks/{id}/status.
-type statusResponse struct {
-	Status   string   `json:"status"`
-	Result   string   `json:"result,omitempty"`
-	Error    string   `json:"error,omitempty"`
-	Progress float64  `json:"progress"`
-	Messages []string `json:"messages,omitempty"`
-}
-
-func getStatus(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
-	val, ok := jobs.Load(id)
-	if !ok {
-		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+		writeRPCResult(w, req.ID, a2aTask{
+			ID:        taskID,
+			ContextID: params.ContextID,
+			Status: a2aStatus{
+				State: "failed",
+				Message: &a2aMessage{
+					Role:  "agent",
+					Parts: []messagePart{{Text: msg}},
+				},
+			},
+		})
 		return
-	}
-	j := val.(*job)
-	j.mu.Lock()
-	defer j.mu.Unlock()
 
-	// Advance state based on instruction keyword.
-	instruction := j.Instruction
-	switch {
+	case strings.HasPrefix(instruction, "input:"):
+		msg := strings.TrimPrefix(instruction, "input:")
+		ts.Status = "input-required"
+		tasks.Store(taskID, ts)
+
+		writeRPCResult(w, req.ID, a2aTask{
+			ID:        taskID,
+			ContextID: params.ContextID,
+			Status: a2aStatus{
+				State: "input-required",
+				Message: &a2aMessage{
+					Role:  "agent",
+					Parts: []messagePart{{Text: msg}},
+				},
+			},
+		})
+		return
+
 	case strings.HasPrefix(instruction, "slow:"):
 		n := parseIntSuffix(instruction, "slow:")
-		j.PollCount++
-		if j.PollCount >= n {
-			j.Status = "completed"
-			j.Result = fmt.Sprintf("completed after %d polls", n)
-			j.Progress = 1.0
-		} else {
-			j.Progress = float64(j.PollCount) / float64(n)
-		}
+		ts.Status = "working"
+		tasks.Store(taskID, ts)
 
-	case strings.HasPrefix(instruction, "fail-then-succeed:"):
-		n := parseIntSuffix(instruction, "fail-then-succeed:")
-		j.Attempts++
-		if j.Attempts <= n {
-			j.Status = "failed"
-			j.Error = fmt.Sprintf("failure %d of %d", j.Attempts, n)
-		} else {
-			j.Status = "completed"
-			j.Result = "succeeded after retries"
-			j.Error = ""
-			j.Progress = 1.0
-		}
+		// Simulate slow processing in a goroutine; respond immediately as working
+		go func() {
+			time.Sleep(time.Duration(n) * time.Second)
+			ts.mu.Lock()
+			defer ts.mu.Unlock()
+			if ts.Status == "working" {
+				ts.Status = "completed"
+				ts.Result = fmt.Sprintf("completed after %d seconds", n)
+			}
+		}()
 
-	case strings.HasPrefix(instruction, "progress:"):
-		j.PollCount++
-		steps := []float64{0, 0.25, 0.5, 0.75, 1.0}
-		idx := j.PollCount
-		if idx >= len(steps) {
-			idx = len(steps) - 1
-		}
-		j.Progress = steps[idx]
-		if j.Progress >= 1.0 {
-			j.Status = "completed"
-			j.Result = "progress complete"
-		}
-
-	case strings.HasPrefix(instruction, "echo:"),
-		strings.HasPrefix(instruction, "fail:"),
-		strings.HasPrefix(instruction, "ask:"):
-		// Already handled at submit time; no state change on poll.
+		writeRPCResult(w, req.ID, a2aTask{
+			ID:        taskID,
+			ContextID: params.ContextID,
+			Status:    a2aStatus{State: "completed"},
+			Artifacts: []artifact{{
+				ArtifactID: uuid.New().String(),
+				Parts:      []messagePart{{Text: fmt.Sprintf("completed after %d seconds delay", n)}},
+			}},
+		})
+		return
 
 	default:
-		// Default: complete after 2 polls.
-		j.PollCount++
-		if j.PollCount >= 2 {
-			j.Status = "completed"
-			j.Result = "done"
-			j.Progress = 1.0
-		} else {
-			j.Progress = float64(j.PollCount) / 2.0
+		// Default: immediate completion
+		ts.Status = "completed"
+		ts.Result = "done"
+		tasks.Store(taskID, ts)
+
+		writeRPCResult(w, req.ID, a2aTask{
+			ID:        taskID,
+			ContextID: params.ContextID,
+			Status:    a2aStatus{State: "completed"},
+			Artifacts: []artifact{{
+				ArtifactID: uuid.New().String(),
+				Parts:      []messagePart{{Text: "done"}},
+			}},
+		})
+		return
+	}
+}
+
+func handleGetTask(w http.ResponseWriter, req jsonRPCRequest) {
+	var params taskIDParams
+	if err := json.Unmarshal(req.Params, &params); err != nil {
+		writeRPCError(w, req.ID, -32602, "Invalid params")
+		return
+	}
+
+	val, ok := tasks.Load(params.ID)
+	if !ok {
+		writeRPCError(w, req.ID, -32001, "Task not found")
+		return
+	}
+
+	ts := val.(*taskState)
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+
+	task := a2aTask{
+		ID:        ts.ID,
+		ContextID: ts.ContextID,
+		Status:    a2aStatus{State: ts.Status},
+	}
+
+	if ts.Status == "completed" && ts.Result != "" {
+		task.Artifacts = []artifact{{
+			ArtifactID: uuid.New().String(),
+			Parts:      []messagePart{{Text: ts.Result}},
+		}}
+	}
+
+	if ts.Status == "failed" && ts.Error != "" {
+		task.Status.Message = &a2aMessage{
+			Role:  "agent",
+			Parts: []messagePart{{Text: ts.Error}},
 		}
 	}
 
-	resp := statusResponse{
-		Status:   j.Status,
-		Result:   j.Result,
-		Error:    j.Error,
-		Progress: j.Progress,
-		Messages: j.Messages,
+	if ts.Status == "input-required" {
+		task.Status.Message = &a2aMessage{
+			Role:  "agent",
+			Parts: []messagePart{{Text: "Waiting for input"}},
+		}
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(resp)
+	writeRPCResult(w, req.ID, task)
 }
 
-// inputRequest is the expected body for POST /tasks/{id}/input.
-type inputRequest struct {
-	Input string `json:"input"`
-}
+func handleCancelTask(w http.ResponseWriter, req jsonRPCRequest) {
+	var params taskIDParams
+	if err := json.Unmarshal(req.Params, &params); err != nil {
+		writeRPCError(w, req.ID, -32602, "Invalid params")
+		return
+	}
 
-func sendInput(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
-	val, ok := jobs.Load(id)
+	val, ok := tasks.Load(params.ID)
 	if !ok {
-		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
-		return
-	}
-	j := val.(*job)
-
-	var req inputRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
+		writeRPCError(w, req.ID, -32001, "Task not found")
 		return
 	}
 
-	j.mu.Lock()
-	defer j.mu.Unlock()
+	ts := val.(*taskState)
+	ts.mu.Lock()
+	ts.Status = "canceled"
+	ts.mu.Unlock()
 
-	j.InputReceived = req.Input
-	j.Status = "completed"
-	j.Result = fmt.Sprintf("received input: %s", req.Input)
-	j.Progress = 1.0
-
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]string{"status": "accepted"})
+	writeRPCResult(w, req.ID, a2aTask{
+		ID:        ts.ID,
+		ContextID: ts.ContextID,
+		Status:    a2aStatus{State: "canceled"},
+	})
 }
 
-func health(w http.ResponseWriter, _ *http.Request) {
+func writeRPCResult(w http.ResponseWriter, id string, result any) {
 	w.Header().Set("Content-Type", "application/json")
-	_, _ = w.Write([]byte(`{"status":"ok"}`))
+	_ = json.NewEncoder(w).Encode(jsonRPCResponse{
+		JSONRPC: "2.0",
+		ID:      id,
+		Result:  result,
+	})
 }
 
-// parseIntSuffix extracts the integer after a keyword prefix (e.g., "slow:3" → 3).
+func writeRPCError(w http.ResponseWriter, id string, code int, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(jsonRPCResponse{
+		JSONRPC: "2.0",
+		ID:      id,
+		Error:   &rpcError{Code: code, Message: message},
+	})
+}
+
+// parseIntSuffix extracts the integer after a keyword prefix (e.g., "slow:3" -> 3).
 // Returns 2 as default if parsing fails.
 func parseIntSuffix(s, prefix string) int {
 	v, err := strconv.Atoi(strings.TrimPrefix(s, prefix))

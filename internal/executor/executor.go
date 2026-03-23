@@ -1,9 +1,9 @@
 // Package executor implements the DAG execution engine for task orchestration.
 //
 // The DAGExecutor takes an execution plan (DAG of subtasks) and runs subtasks
-// in dependency order. It handles polling external agents, retries, human-in-the-loop
-// input via signal channels, blocked propagation, replanning, budget enforcement,
-// and cancellation.
+// in dependency order. It uses the A2A protocol to communicate with agents,
+// handles retries, human-in-the-loop input via A2A input-required state,
+// blocked propagation, replanning, budget enforcement, and cancellation.
 package executor
 
 import (
@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -19,7 +20,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"taskhub/internal/adapter"
+	"taskhub/internal/a2a"
 	"taskhub/internal/audit"
 	"taskhub/internal/events"
 	"taskhub/internal/models"
@@ -28,19 +29,9 @@ import (
 
 // Sentinel errors.
 var (
-	ErrSubtaskNotWaiting = errors.New("subtask is not waiting for input")
-	ErrBudgetExceeded    = errors.New("monthly budget exceeded")
-	ErrTaskCanceled      = errors.New("task was canceled")
+	ErrBudgetExceeded = errors.New("monthly budget exceeded")
+	ErrTaskCanceled   = errors.New("task was canceled")
 )
-
-// Polling backoff intervals (exponential with cap).
-var pollIntervals = []time.Duration{
-	1 * time.Second,
-	2 * time.Second,
-	5 * time.Second,
-	10 * time.Second,
-	30 * time.Second,
-}
 
 // DAGExecutor manages the lifecycle of task execution.
 type DAGExecutor struct {
@@ -49,16 +40,15 @@ type DAGExecutor struct {
 	EventStore   *events.Store
 	Audit        *audit.Logger
 	Orchestrator *orchestrator.Orchestrator
-	Adapters     map[string]adapter.AgentAdapter // adapter_type → adapter
+	A2AClient    *a2a.Client
 
-	signals sync.Map // subtask_id → chan adapter.UserInput
 	cancels sync.Map // task_id → context.CancelFunc
 
 	maxConcurrent      int // global max concurrent subtasks (default 10)
 	maxConcurrentAgent int // per-agent max concurrent subtasks (default 3)
 }
 
-// MaxConcurrent returns the global concurrency limit, defaulting to 10.
+// getMaxConcurrent returns the global concurrency limit, defaulting to 10.
 func (e *DAGExecutor) getMaxConcurrent() int {
 	if e.maxConcurrent > 0 {
 		return e.maxConcurrent
@@ -66,7 +56,7 @@ func (e *DAGExecutor) getMaxConcurrent() int {
 	return 10
 }
 
-// MaxConcurrentAgent returns the per-agent concurrency limit, defaulting to 3.
+// getMaxConcurrentAgent returns the per-agent concurrency limit, defaulting to 3.
 func (e *DAGExecutor) getMaxConcurrentAgent() int {
 	if e.maxConcurrentAgent > 0 {
 		return e.maxConcurrentAgent
@@ -273,7 +263,7 @@ func (e *DAGExecutor) runDAGLoop(ctx context.Context, task models.Task, subtasks
 				allDone = false
 			case "blocked":
 				// Blocked is terminal for this loop iteration
-			case "running", "waiting_for_input":
+			case "running", "input_required":
 				allDone = false
 				if subtasks[i].Status == "running" {
 					runningCount++
@@ -377,8 +367,7 @@ func (e *DAGExecutor) runDAGLoop(ctx context.Context, task models.Task, subtasks
 	}
 }
 
-// runSubtask handles the lifecycle of a single subtask:
-// submit → poll loop → handle terminal status.
+// runSubtask handles the lifecycle of a single subtask via A2A SendMessage.
 func (e *DAGExecutor) runSubtask(
 	ctx context.Context,
 	task models.Task,
@@ -409,30 +398,18 @@ func (e *DAGExecutor) runSubtask(
 	// Store input in DB
 	_, _ = e.DB.Exec(ctx, `UPDATE subtasks SET input = $1 WHERE id = $2`, inputJSON, st.ID)
 
-	// Get the adapter for this agent type
-	adp, ok := e.Adapters[agent.AdapterType]
-	if !ok {
-		e.failSubtask(ctx, task.ID, st.ID, fmt.Sprintf("no adapter for type %q", agent.AdapterType), allSubtasks)
-		return
-	}
+	// Build A2A message parts
+	parts := []a2a.MessagePart{a2a.TextPart(st.Instruction)}
 
-	// Submit to agent
-	handle, err := adp.Submit(ctx, agent, adapter.SubTaskInput{
-		TaskID:      st.TaskID,
-		Instruction: st.Instruction,
-		Input:       inputJSON,
-	})
-	if err != nil {
-		e.failSubtask(ctx, task.ID, st.ID, fmt.Sprintf("submit failed: %v", err), allSubtasks)
-		return
+	// If there are upstream outputs, include them as a data part
+	upstreamData := make(map[string]any)
+	for key, val := range inputMap {
+		if strings.HasPrefix(key, "upstream_") {
+			upstreamData[key] = val
+		}
 	}
-
-	// Store poll_job_id in DB (critical for crash recovery)
-	_, err = e.DB.Exec(ctx,
-		`UPDATE subtasks SET poll_job_id = $1, poll_endpoint = $2 WHERE id = $3`,
-		handle.JobID, handle.StatusEndpoint, st.ID)
-	if err != nil {
-		log.Printf("executor: store poll_job_id for subtask %s: %v", st.ID, err)
+	if len(upstreamData) > 0 {
+		parts = append(parts, a2a.DataPart(upstreamData))
 	}
 
 	// Audit: agent call submitted
@@ -452,204 +429,198 @@ func (e *DAGExecutor) runSubtask(
 	// System message: agent started
 	e.publishSystemMessage(ctx, task.ID, fmt.Sprintf("%s started working on: %s", agent.Name, st.Instruction))
 
-	// Polling loop with exponential backoff
-	e.pollSubtask(ctx, task, st, agent, handle, allSubtasks, agents, statusChangeCh)
+	// Send A2A message to agent
+	result, err := e.A2AClient.SendMessage(ctx, agent.Endpoint, task.ID, "", parts)
+	if err != nil {
+		e.failSubtask(ctx, task.ID, st.ID, fmt.Sprintf("a2a send failed: %v", err), allSubtasks)
+		return
+	}
+
+	// Store A2A task ID for future follow-up
+	if result.TaskID != "" {
+		_, _ = e.DB.Exec(ctx,
+			`UPDATE subtasks SET a2a_task_id = $1 WHERE id = $2`,
+			result.TaskID, st.ID)
+	}
+
+	// Handle result state
+	e.handleA2AResult(ctx, task, st, agent, result, allSubtasks, statusChangeCh)
 }
 
-// pollSubtask runs the polling loop for a submitted subtask.
-func (e *DAGExecutor) pollSubtask(
+// handleA2AResult processes the result from an A2A SendMessage call.
+func (e *DAGExecutor) handleA2AResult(
 	ctx context.Context,
 	task models.Task,
 	st models.SubTask,
 	agent models.Agent,
-	handle adapter.JobHandle,
+	result *a2a.SendResult,
 	allSubtasks []models.SubTask,
-	agents []models.Agent,
 	statusChangeCh chan<- string,
 ) {
-	adp := e.Adapters[agent.AdapterType]
-	intervalIdx := 0
-	var lastProgress *float64
+	switch result.State {
+	case "completed":
+		now := time.Now()
+		output := result.Artifacts
+		if output == nil {
+			output = json.RawMessage(`null`)
+		}
+		_, err := e.DB.Exec(ctx,
+			`UPDATE subtasks SET status = 'completed', output = $1, completed_at = $2 WHERE id = $3`,
+			output, now, st.ID)
+		if err != nil {
+			log.Printf("executor: update subtask %s to completed: %v", st.ID, err)
+		}
 
-	for {
-		// Check for cancellation
-		select {
-		case <-ctx.Done():
+		e.publishEvent(ctx, task.ID, st.ID, "subtask.completed", "agent", agent.ID, map[string]any{
+			"output": output,
+		})
+
+		// Publish agent's output as a chat message
+		if len(result.Artifacts) > 0 {
+			outputStr := string(result.Artifacts)
+			if len(outputStr) > 2 && outputStr[0] == '"' && outputStr[len(outputStr)-1] == '"' {
+				var unquoted string
+				if json.Unmarshal(result.Artifacts, &unquoted) == nil {
+					outputStr = unquoted
+				}
+			}
+			e.publishMessage(ctx, task.ID, agent.ID, agent.Name, outputStr)
+		}
+		e.publishSystemMessage(ctx, task.ID, fmt.Sprintf("%s completed the task", agent.Name))
+
+		// Audit: agent call completed
+		_ = e.Audit.Log(ctx, audit.Entry{
+			OrgID:        task.OrgID,
+			TaskID:       task.ID,
+			SubtaskID:    st.ID,
+			AgentID:      agent.ID,
+			ActorType:    "agent",
+			ActorID:      agent.ID,
+			Action:       "agent.completed",
+			ResourceType: "subtask",
+			ResourceID:   st.ID,
+		})
+
+	case "failed":
+		// Check retry
+		var attempt int
+		var maxAttempts int
+		_ = e.DB.QueryRow(ctx,
+			`SELECT attempt, max_attempts FROM subtasks WHERE id = $1`, st.ID).
+			Scan(&attempt, &maxAttempts)
+
+		if attempt < maxAttempts {
+			log.Printf("executor: subtask %s failed (attempt %d/%d), retrying: %s", st.ID, attempt, maxAttempts, result.Error)
+			_, _ = e.DB.Exec(ctx,
+				`UPDATE subtasks SET status = 'pending', error = $1, a2a_task_id = '' WHERE id = $2`,
+				result.Error, st.ID)
+			e.publishEvent(ctx, task.ID, st.ID, "subtask.failed", "agent", agent.ID, map[string]any{
+				"error":   result.Error,
+				"attempt": attempt,
+				"retried": true,
+			})
 			return
+		}
+
+		// Final failure
+		e.failSubtask(ctx, task.ID, st.ID, result.Error, allSubtasks)
+
+	case "input-required":
+		// Update DB status to input_required
+		_, _ = e.DB.Exec(ctx, `UPDATE subtasks SET status = 'input_required' WHERE id = $1`, st.ID)
+
+		// Publish event
+		e.publishEvent(ctx, task.ID, st.ID, "subtask.input_required", "agent", agent.ID, map[string]any{
+			"message": result.Message,
+		})
+
+		// Post message to chat
+		chatMsg := fmt.Sprintf("@user %s needs your input", agent.Name)
+		if result.Message != "" {
+			chatMsg = fmt.Sprintf("@user %s: %s", agent.Name, result.Message)
+		}
+		e.publishMessage(ctx, task.ID, agent.ID, agent.Name, chatMsg)
+
+		// Notify DAG loop that we're in input_required state
+		select {
+		case statusChangeCh <- st.ID:
 		default:
 		}
 
-		// Wait before polling
-		interval := pollIntervals[intervalIdx]
-		if intervalIdx < len(pollIntervals)-1 {
-			intervalIdx++
-		}
-
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(interval):
-		}
-
-		// Poll agent
-		status, err := adp.Poll(ctx, agent, handle)
-		if err != nil {
-			log.Printf("executor: poll subtask %s: %v", st.ID, err)
-			// Network errors during poll are transient — continue polling
-			continue
-		}
-
-		switch status.Status {
-		case "running":
-			// Publish progress if changed
-			if status.Progress != nil && (lastProgress == nil || *status.Progress != *lastProgress) {
-				lastProgress = status.Progress
-				e.publishEvent(ctx, task.ID, st.ID, "subtask.progress", "agent", agent.ID, map[string]any{
-					"progress": *status.Progress,
-				})
-			}
-
-			// Publish any new messages from the agent to the group chat
-			for _, msg := range status.Messages {
-				e.publishMessage(ctx, task.ID, agent.ID, agent.Name, msg.Content)
-			}
-
-		case "completed":
-			now := time.Now()
-			_, err := e.DB.Exec(ctx,
-				`UPDATE subtasks SET status = 'completed', output = $1, completed_at = $2 WHERE id = $3`,
-				status.Result, now, st.ID)
-			if err != nil {
-				log.Printf("executor: update subtask %s to completed: %v", st.ID, err)
-			}
-
-			e.publishEvent(ctx, task.ID, st.ID, "subtask.completed", "agent", agent.ID, map[string]any{
-				"output": status.Result,
-			})
-
-			// Publish agent's output as a chat message so users can see the result
-			if len(status.Result) > 0 {
-				outputStr := string(status.Result)
-				// Unwrap quoted strings for readability
-				if len(outputStr) > 2 && outputStr[0] == '"' && outputStr[len(outputStr)-1] == '"' {
-					var unquoted string
-					if json.Unmarshal(status.Result, &unquoted) == nil {
-						outputStr = unquoted
-					}
-				}
-				e.publishMessage(ctx, task.ID, agent.ID, agent.Name, outputStr)
-			}
-			e.publishSystemMessage(ctx, task.ID, fmt.Sprintf("%s completed the task", agent.Name))
-
-			// Audit: agent call completed
-			_ = e.Audit.Log(ctx, audit.Entry{
-				OrgID:        task.OrgID,
-				TaskID:       task.ID,
-				SubtaskID:    st.ID,
-				AgentID:      agent.ID,
-				ActorType:    "agent",
-				ActorID:      agent.ID,
-				Action:       "agent.completed",
-				ResourceType: "subtask",
-				ResourceID:   st.ID,
-			})
-			return
-
-		case "failed":
-			// Check retry
-			var attempt int
-			var maxAttempts int
-			_ = e.DB.QueryRow(ctx,
-				`SELECT attempt, max_attempts FROM subtasks WHERE id = $1`, st.ID).
-				Scan(&attempt, &maxAttempts)
-
-			if attempt < maxAttempts {
-				// Retry: reset to pending, the DAG loop will re-pick it up
-				log.Printf("executor: subtask %s failed (attempt %d/%d), retrying: %s", st.ID, attempt, maxAttempts, status.Error)
-				_, _ = e.DB.Exec(ctx,
-					`UPDATE subtasks SET status = 'pending', error = $1, poll_job_id = NULL, poll_endpoint = NULL WHERE id = $2`,
-					status.Error, st.ID)
-				e.publishEvent(ctx, task.ID, st.ID, "subtask.failed", "agent", agent.ID, map[string]any{
-					"error":   status.Error,
-					"attempt": attempt,
-					"retried": true,
-				})
-				return
-			}
-
-			// Final failure
-			e.failSubtask(ctx, task.ID, st.ID, status.Error, allSubtasks)
-			return
-
-		case "needs_input":
-			// CRITICAL: Register signal channel BEFORE updating DB status
-			inputCh := make(chan adapter.UserInput, 1)
-			e.signals.Store(st.ID, inputCh)
-
-			// Update DB status
-			_, _ = e.DB.Exec(ctx, `UPDATE subtasks SET status = 'waiting_for_input' WHERE id = $1`, st.ID)
-
-			// Publish event
-			var inputReqData map[string]any
-			if status.InputRequest != nil {
-				inputReqData = map[string]any{
-					"message": status.InputRequest.Message,
-					"options": status.InputRequest.Options,
-				}
-			}
-			e.publishEvent(ctx, task.ID, st.ID, "subtask.waiting_for_input", "agent", agent.ID, inputReqData)
-
-			// Post message to chat: "@user agent needs input"
-			chatMsg := fmt.Sprintf("@user %s needs your input", agent.Name)
-			if status.InputRequest != nil && status.InputRequest.Message != "" {
-				chatMsg = fmt.Sprintf("@user %s: %s", agent.Name, status.InputRequest.Message)
-			}
-			e.publishMessage(ctx, task.ID, agent.ID, agent.Name, chatMsg)
-
-			// Notify DAG loop that we're waiting
-			select {
-			case statusChangeCh <- st.ID:
-			default:
-			}
-
-			// Block waiting for user input or cancellation
-			select {
-			case <-ctx.Done():
-				e.signals.Delete(st.ID)
-				return
-			case userInput := <-inputCh:
-				e.signals.Delete(st.ID)
-
-				// Send input to agent
-				if err := adp.SendInput(ctx, agent, handle, userInput); err != nil {
-					log.Printf("executor: send input to subtask %s: %v", st.ID, err)
-					e.failSubtask(ctx, task.ID, st.ID, fmt.Sprintf("send input failed: %v", err), allSubtasks)
-					return
-				}
-
-				// Resume polling
-				_, _ = e.DB.Exec(ctx, `UPDATE subtasks SET status = 'running' WHERE id = $1`, st.ID)
-				e.publishEvent(ctx, task.ID, st.ID, "subtask.input_provided", "user", userInput.SubtaskID, map[string]any{
-					"message": userInput.Message,
-				})
-				e.publishEvent(ctx, task.ID, st.ID, "subtask.running", "system", "", map[string]any{
-					"resumed_after_input": true,
-				})
-
-				// Reset backoff
-				intervalIdx = 0
-			}
-		}
+	default:
+		// Unknown state (working, submitted, etc.) — treat as failure
+		log.Printf("executor: subtask %s returned unexpected state %q", st.ID, result.State)
+		e.failSubtask(ctx, task.ID, st.ID, fmt.Sprintf("unexpected agent state: %s", result.State), allSubtasks)
 	}
 }
 
-// Signal delivers user input to a subtask that is waiting for input.
-func (e *DAGExecutor) Signal(ctx context.Context, taskID string, input adapter.UserInput) error {
-	ch, ok := e.signals.Load(input.SubtaskID)
-	if !ok {
-		return ErrSubtaskNotWaiting
+// SendFollowUp sends a follow-up message to an agent for an existing subtask.
+// Used for @mention routing when a user sends a message to an agent.
+func (e *DAGExecutor) SendFollowUp(ctx context.Context, taskID, subtaskID, agentID, content string) error {
+	// Load the subtask to get the a2a_task_id
+	var a2aTaskID string
+	var agentEndpoint string
+	err := e.DB.QueryRow(ctx,
+		`SELECT s.a2a_task_id, a.endpoint
+		 FROM subtasks s JOIN agents a ON a.id = s.agent_id
+		 WHERE s.id = $1`, subtaskID).
+		Scan(&a2aTaskID, &agentEndpoint)
+	if err != nil {
+		return fmt.Errorf("load subtask: %w", err)
 	}
-	ch.(chan adapter.UserInput) <- input
+
+	parts := []a2a.MessagePart{a2a.TextPart(content)}
+
+	result, err := e.A2AClient.SendMessage(ctx, agentEndpoint, taskID, a2aTaskID, parts)
+	if err != nil {
+		return fmt.Errorf("a2a follow-up failed: %w", err)
+	}
+
+	// Update A2A task ID if it changed
+	if result.TaskID != "" && result.TaskID != a2aTaskID {
+		_, _ = e.DB.Exec(ctx,
+			`UPDATE subtasks SET a2a_task_id = $1 WHERE id = $2`,
+			result.TaskID, subtaskID)
+	}
+
+	// Handle the result
+	switch result.State {
+	case "completed":
+		now := time.Now()
+		output := result.Artifacts
+		if output == nil {
+			output = json.RawMessage(`null`)
+		}
+		_, _ = e.DB.Exec(ctx,
+			`UPDATE subtasks SET status = 'completed', output = $1, completed_at = $2 WHERE id = $3`,
+			output, now, subtaskID)
+
+		// Publish completion to chat
+		if len(result.Artifacts) > 0 {
+			var agentName string
+			_ = e.DB.QueryRow(ctx, `SELECT name FROM agents WHERE id = $1`, agentID).Scan(&agentName)
+			if agentName == "" {
+				agentName = agentID
+			}
+			outputStr := string(result.Artifacts)
+			if len(outputStr) > 2 && outputStr[0] == '"' && outputStr[len(outputStr)-1] == '"' {
+				var unquoted string
+				if json.Unmarshal(result.Artifacts, &unquoted) == nil {
+					outputStr = unquoted
+				}
+			}
+			e.publishMessage(ctx, taskID, agentID, agentName, outputStr)
+		}
+
+	case "input-required":
+		_, _ = e.DB.Exec(ctx, `UPDATE subtasks SET status = 'input_required' WHERE id = $1`, subtaskID)
+
+	case "failed":
+		_, _ = e.DB.Exec(ctx,
+			`UPDATE subtasks SET status = 'failed', error = $1 WHERE id = $2`,
+			result.Error, subtaskID)
+	}
+
 	return nil
 }
 
@@ -662,9 +633,9 @@ func (e *DAGExecutor) Cancel(ctx context.Context, taskID string) error {
 
 	_ = e.updateTaskStatus(ctx, taskID, "canceled", "canceled by user")
 
-	// Cancel all running/pending subtasks
+	// Cancel all running/pending/input_required subtasks
 	_, _ = e.DB.Exec(ctx,
-		`UPDATE subtasks SET status = 'canceled' WHERE task_id = $1 AND status IN ('pending', 'running', 'waiting_for_input')`,
+		`UPDATE subtasks SET status = 'canceled' WHERE task_id = $1 AND status IN ('pending', 'running', 'input_required')`,
 		taskID)
 
 	e.publishEvent(ctx, taskID, "", "task.canceled", "user", "", nil)
@@ -881,7 +852,7 @@ func (e *DAGExecutor) failSubtask(ctx context.Context, taskID, subtaskID, errMsg
 func (e *DAGExecutor) loadSubtasks(ctx context.Context, taskID string) ([]models.SubTask, error) {
 	rows, err := e.DB.Query(ctx,
 		`SELECT id, task_id, agent_id, instruction, COALESCE(depends_on, '{}'), status,
-		        input, output, COALESCE(error, ''), COALESCE(poll_job_id, ''), COALESCE(poll_endpoint, ''),
+		        input, output, COALESCE(error, ''), COALESCE(a2a_task_id, ''),
 		        attempt, max_attempts, created_at, started_at, completed_at
 		 FROM subtasks WHERE task_id = $1 ORDER BY created_at`, taskID)
 	if err != nil {
@@ -894,7 +865,7 @@ func (e *DAGExecutor) loadSubtasks(ctx context.Context, taskID string) ([]models
 		var st models.SubTask
 		err := rows.Scan(
 			&st.ID, &st.TaskID, &st.AgentID, &st.Instruction, &st.DependsOn, &st.Status,
-			&st.Input, &st.Output, &st.Error, &st.PollJobID, &st.PollEndpoint,
+			&st.Input, &st.Output, &st.Error, &st.A2ATaskID,
 			&st.Attempt, &st.MaxAttempts, &st.CreatedAt, &st.StartedAt, &st.CompletedAt)
 		if err != nil {
 			return nil, fmt.Errorf("scan subtask: %w", err)
@@ -908,8 +879,8 @@ func (e *DAGExecutor) loadSubtasks(ctx context.Context, taskID string) ([]models
 func (e *DAGExecutor) loadOrgAgents(ctx context.Context, orgID string) ([]models.Agent, error) {
 	rows, err := e.DB.Query(ctx,
 		`SELECT id, org_id, name, COALESCE(version,''), COALESCE(description,''), endpoint,
-		        adapter_type, adapter_config, COALESCE(auth_type,'none'), auth_config,
-		        COALESCE(capabilities, '{}'), input_schema, output_schema, config,
+		        COALESCE(agent_card_url,''), COALESCE(agent_card,'{}'), card_fetched_at,
+		        COALESCE(capabilities, '[]'), COALESCE(skills,'[]'),
 		        COALESCE(status,'active'), created_at, updated_at
 		 FROM agents WHERE org_id = $1 AND status = 'active'`, orgID)
 	if err != nil {
@@ -920,13 +891,23 @@ func (e *DAGExecutor) loadOrgAgents(ctx context.Context, orgID string) ([]models
 	var agents []models.Agent
 	for rows.Next() {
 		var a models.Agent
+		var capsJSON, skillsJSON, agentCard []byte
 		err := rows.Scan(
 			&a.ID, &a.OrgID, &a.Name, &a.Version, &a.Description, &a.Endpoint,
-			&a.AdapterType, &a.AdapterConfig, &a.AuthType, &a.AuthConfig,
-			&a.Capabilities, &a.InputSchema, &a.OutputSchema, &a.Config,
+			&a.AgentCardURL, &agentCard, &a.CardFetchedAt,
+			&capsJSON, &skillsJSON,
 			&a.Status, &a.CreatedAt, &a.UpdatedAt)
 		if err != nil {
 			return nil, fmt.Errorf("scan agent: %w", err)
+		}
+		if agentCard != nil {
+			a.AgentCard = json.RawMessage(agentCard)
+		}
+		if skillsJSON != nil {
+			a.Skills = json.RawMessage(skillsJSON)
+		}
+		if err := json.Unmarshal(capsJSON, &a.Capabilities); err != nil {
+			a.Capabilities = []string{}
 		}
 		agents = append(agents, a)
 	}
