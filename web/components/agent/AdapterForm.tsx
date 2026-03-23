@@ -42,27 +42,39 @@ export function AdapterForm({ value, onChange }: AdapterFormProps) {
   );
 
   const handleTestConnection = useCallback(async () => {
+    const endpoint = value.endpoint?.trim();
+    if (!endpoint) {
+      setTestResult({ ok: false, message: "Endpoint is required" });
+      return;
+    }
+
     setIsTesting(true);
     setTestResult(null);
     try {
-      // Dynamic import to avoid circular deps
-      const { api } = await import("@/lib/api");
-      const { useOrgStore } = await import("@/lib/store");
-      const orgId = useOrgStore.getState().currentOrg?.id;
-
-      if (!orgId || !value.id) {
+      if (value.id) {
+        // Agent already saved — use the backend healthcheck API
+        const { api } = await import("@/lib/api");
+        const { useOrgStore } = await import("@/lib/store");
+        const orgId = useOrgStore.getState().currentOrg?.id;
+        if (!orgId) {
+          setTestResult({ ok: false, message: "No organization selected" });
+          return;
+        }
+        const result = await api.agents.healthcheck(orgId, value.id);
         setTestResult({
-          ok: false,
-          message: "Save the agent first to test the connection.",
+          ok: result.status >= 200 && result.status < 300,
+          message: `Status ${result.status} (${result.latency_ms}ms)`,
         });
-        return;
+      } else {
+        // Agent not saved yet — directly test the endpoint/health
+        const start = Date.now();
+        const res = await fetch(`${endpoint}/health`);
+        const latency = Date.now() - start;
+        setTestResult({
+          ok: res.ok,
+          message: `Status ${res.status} (${latency}ms)`,
+        });
       }
-
-      const result = await api.agents.healthcheck(orgId, value.id);
-      setTestResult({
-        ok: result.status >= 200 && result.status < 300,
-        message: `Status ${result.status} (${result.latency_ms}ms)`,
-      });
     } catch (err) {
       setTestResult({
         ok: false,
@@ -71,7 +83,7 @@ export function AdapterForm({ value, onChange }: AdapterFormProps) {
     } finally {
       setIsTesting(false);
     }
-  }, [value.id]);
+  }, [value.id, value.endpoint]);
 
   const authType: AuthType = value.auth_type ?? "none";
   const adapterType: AdapterType = value.adapter_type ?? "native";
@@ -345,7 +357,7 @@ export function AdapterForm({ value, onChange }: AdapterFormProps) {
           type="button"
           variant="outline"
           onClick={() => void handleTestConnection()}
-          disabled={isTesting || !value.id}
+          disabled={isTesting || !value.endpoint?.trim()}
         >
           {isTesting ? (
             <Loader2 className="size-4 animate-spin" />
