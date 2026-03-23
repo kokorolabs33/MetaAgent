@@ -206,7 +206,7 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
           "subtask.running": "running",
           "subtask.completed": "completed",
           "subtask.failed": "failed",
-          "subtask.waiting_for_input": "waiting_for_input",
+          "subtask.input_required": "input_required",
           "subtask.blocked": "blocked",
           "subtask.cancelled": "cancelled",
         };

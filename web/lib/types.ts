@@ -58,13 +58,30 @@ export interface Agent {
   version: string;
   description: string;
   endpoint: string;
-  adapter_type: "http_poll" | "native";
-  adapter_config?: Record<string, unknown>;
-  auth_type: "none" | "bearer" | "api_key" | "basic";
+  agent_card_url: string;
+  agent_card?: Record<string, unknown>;
+  card_fetched_at?: string;
   capabilities: string[];
+  skills?: AgentSkill[];
   status: "active" | "inactive" | "degraded";
   created_at: string;
   updated_at: string;
+}
+
+export interface AgentSkill {
+  id: string;
+  name: string;
+  description: string;
+}
+
+export interface DiscoveredAgent {
+  name: string;
+  description: string;
+  version: string;
+  url: string;
+  skills: AgentSkill[];
+  capabilities: string[];
+  raw_card: Record<string, unknown>;
 }
 
 // Task System
@@ -91,11 +108,11 @@ export interface SubTask {
   agent_id: string;
   instruction: string;
   depends_on: string[];
-  status: "pending" | "running" | "completed" | "failed" | "waiting_for_input" | "cancelled" | "blocked";
+  status: "pending" | "running" | "completed" | "failed" | "input_required" | "cancelled" | "blocked";
   input?: Record<string, unknown>;
   output?: Record<string, unknown>;
   error?: string;
-  poll_job_id?: string;
+  a2a_task_id?: string;
   attempt: number;
   max_attempts: number;
   created_at: string;

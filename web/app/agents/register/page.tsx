@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { ArrowLeft } from "lucide-react";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
-import { AdapterForm } from "@/components/agent/AdapterForm";
+import { AgentDiscoveryForm } from "@/components/agent/AdapterForm";
 import { useOrgStore, useAgentStore } from "@/lib/store";
 import type { Agent } from "@/lib/types";
 
@@ -23,8 +23,6 @@ export default function RegisterAgentPage() {
     name: "",
     description: "",
     endpoint: "",
-    adapter_type: "native",
-    auth_type: "none",
     capabilities: [],
   });
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -88,7 +86,7 @@ export default function RegisterAgentPage() {
           onSubmit={(e) => void handleSubmit(e)}
           className="mx-auto max-w-lg space-y-6"
         >
-          <AdapterForm value={formData} onChange={setFormData} />
+          <AgentDiscoveryForm value={formData} onChange={setFormData} />
 
           {error && (
             <p className="text-sm text-destructive">{error}</p>

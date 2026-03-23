@@ -48,7 +48,7 @@ export function GroupChat({
 
   // Check if any subtask is waiting for input
   const hasWaitingSubtask = useMemo(
-    () => subtasks?.some((st) => st.status === "waiting_for_input") ?? false,
+    () => subtasks?.some((st) => st.status === "input_required") ?? false,
     [subtasks],
   );
 

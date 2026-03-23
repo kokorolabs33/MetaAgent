@@ -23,11 +23,6 @@ const statusConfig: Record<
   },
 };
 
-const adapterConfig: Record<Agent["adapter_type"], string> = {
-  http_poll: "HTTP Poll",
-  native: "Native",
-};
-
 interface AgentCardProps {
   agent: Agent;
 }
@@ -45,9 +40,11 @@ export function AgentCard({ agent }: AgentCardProps) {
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <CardTitle className="truncate">{agent.name}</CardTitle>
-            <Badge variant="outline" className="text-xs">
-              {adapterConfig[agent.adapter_type]}
-            </Badge>
+            {agent.version && (
+              <Badge variant="outline" className="text-xs">
+                v{agent.version}
+              </Badge>
+            )}
           </div>
           <Badge className={status.className}>{status.label}</Badge>
         </div>

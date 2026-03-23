@@ -3,6 +3,7 @@ import type {
   OrgListItem,
   OrgMemberWithUser,
   Agent,
+  DiscoveredAgent,
   Task,
   TaskWithSubtasks,
   SubTask,
@@ -90,6 +91,8 @@ export const api = {
         `/api/orgs/${orgId}/agents/test-endpoint`,
         { endpoint },
       ),
+    discover: (orgId: string, url: string) =>
+      post<DiscoveredAgent>(`/api/orgs/${orgId}/agents/discover`, { url }),
   },
   tasks: {
     list: (orgId: string, status?: string) => {
