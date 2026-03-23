@@ -287,8 +287,14 @@ func (e *DAGExecutor) runDAGLoop(ctx context.Context, task models.Task, subtasks
 		// All completed (no pending, no running, no failed)
 		if allDone && !anyFailed {
 			now := time.Now()
-			_, _ = e.DB.Exec(taskCtx, `UPDATE tasks SET status = 'completed', completed_at = $1 WHERE id = $2`, now, task.ID)
-			e.publishEvent(taskCtx, task.ID, "", "task.completed", "system", "", nil)
+
+			// Aggregate all subtask outputs into task result
+			taskResult := e.aggregateResults(taskCtx, task.ID, subtasks)
+			_, _ = e.DB.Exec(taskCtx,
+				`UPDATE tasks SET status = 'completed', completed_at = $1, result = $2 WHERE id = $3`,
+				now, taskResult, task.ID)
+			e.publishEvent(taskCtx, task.ID, "", "task.completed", "system", "", map[string]any{"result": taskResult})
+			e.publishSystemMessage(taskCtx, task.ID, "All subtasks completed. Task finished.")
 			wg.Wait()
 			return nil
 		}
@@ -520,6 +526,19 @@ func (e *DAGExecutor) pollSubtask(
 			e.publishEvent(ctx, task.ID, st.ID, "subtask.completed", "agent", agent.ID, map[string]any{
 				"output": status.Result,
 			})
+
+			// Publish agent's output as a chat message so users can see the result
+			if len(status.Result) > 0 {
+				outputStr := string(status.Result)
+				// Unwrap quoted strings for readability
+				if len(outputStr) > 2 && outputStr[0] == '"' && outputStr[len(outputStr)-1] == '"' {
+					var unquoted string
+					if json.Unmarshal(status.Result, &unquoted) == nil {
+						outputStr = unquoted
+					}
+				}
+				e.publishMessage(ctx, task.ID, agent.ID, agent.Name, outputStr)
+			}
 			e.publishSystemMessage(ctx, task.ID, fmt.Sprintf("%s completed the task", agent.Name))
 
 			// Audit: agent call completed
@@ -933,6 +952,32 @@ func (e *DAGExecutor) publishEvent(ctx context.Context, taskID, subtaskID, event
 		return
 	}
 	e.Broker.Publish(evt)
+}
+
+// aggregateResults collects all subtask outputs into a combined task result.
+func (e *DAGExecutor) aggregateResults(ctx context.Context, taskID string, subtasks []models.SubTask) json.RawMessage {
+	result := make(map[string]json.RawMessage)
+
+	// Load agent names for readable keys
+	for _, st := range subtasks {
+		if st.Status != "completed" || len(st.Output) == 0 {
+			continue
+		}
+		var agentName string
+		_ = e.DB.QueryRow(ctx, `SELECT name FROM agents WHERE id = $1`, st.AgentID).Scan(&agentName)
+		if agentName == "" {
+			agentName = st.AgentID
+		}
+		key := agentName
+		// If multiple subtasks from same agent, append index
+		if _, exists := result[key]; exists {
+			key = fmt.Sprintf("%s_%s", agentName, st.ID[:8])
+		}
+		result[key] = st.Output
+	}
+
+	b, _ := json.Marshal(result)
+	return b
 }
 
 // publishSystemMessage inserts a system message into the group chat.

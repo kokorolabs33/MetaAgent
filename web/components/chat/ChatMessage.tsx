@@ -14,8 +14,10 @@ const senderColors: Record<Message["sender_type"], string> = {
   user: "bg-purple-600",
 };
 
-function formatTime(dateStr: string): string {
+function formatTime(dateStr: string | undefined): string {
+  if (!dateStr) return "";
   const d = new Date(dateStr);
+  if (isNaN(d.getTime())) return "";
   return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 

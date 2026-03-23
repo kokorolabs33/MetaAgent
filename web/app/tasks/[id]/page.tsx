@@ -221,6 +221,18 @@ export default function TaskDetailPage() {
         </div>
       </div>
 
+      {/* Task Result (shown when completed) */}
+      {currentTask.status === "completed" && currentTask.result && (
+        <div className="border-t border-border bg-green-950/20 px-4 py-3">
+          <div className="mb-1 text-xs font-semibold uppercase tracking-wider text-green-400">
+            Result
+          </div>
+          <pre className="max-h-40 overflow-auto rounded bg-gray-900 p-3 text-xs text-gray-300">
+            {JSON.stringify(currentTask.result, null, 2)}
+          </pre>
+        </div>
+      )}
+
       {/* Bottom status bar */}
       <div className="flex items-center gap-6 border-t border-border bg-gray-900/50 px-4 py-2 text-xs text-muted-foreground">
         <div className="flex items-center gap-1.5">
