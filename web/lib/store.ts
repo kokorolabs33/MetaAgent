@@ -156,7 +156,11 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
 
   sendMessage: async (orgId, taskId, content) => {
     const msg = await api.messages.send(orgId, taskId, content);
-    set((s) => ({ messages: [...s.messages, msg] }));
+    // Optimistically add — SSE dedup will skip if it arrives again
+    set((s) => {
+      if (s.messages.some((m) => m.id === msg.id)) return s;
+      return { messages: [...s.messages, msg] };
+    });
   },
 
   connectSSE: (orgId, taskId) => {
@@ -222,12 +226,40 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
       }
     }
 
-    // Add messages from message events
+    // Add messages from message events (deduplicate by message_id)
     if (event.type === "message") {
-      const data = event.data as unknown as Message;
-      if (data.content) {
-        set((s) => ({ messages: [...s.messages, data] }));
+      const data = event.data as Record<string, unknown>;
+      const msgId = data.message_id as string | undefined;
+      if (data.content && msgId) {
+        set((s) => {
+          // Skip if message already exists (from optimistic sendMessage or duplicate SSE)
+          if (s.messages.some((m) => m.id === msgId)) {
+            return s;
+          }
+          const msg: Message = {
+            id: msgId,
+            task_id: get().currentTask?.id ?? "",
+            sender_type: (data.sender_type as Message["sender_type"]) ?? "system",
+            sender_id: data.sender_id as string | undefined,
+            sender_name: (data.sender_name as string) ?? "Unknown",
+            content: data.content as string,
+            mentions: (data.mentions as string[]) ?? [],
+            created_at: (data.created_at as string) ?? new Date().toISOString(),
+          };
+          return { messages: [...s.messages, msg] };
+        });
       }
+    }
+
+    // Update task result when task completes
+    if (event.type === "task.completed" && event.data.result) {
+      set({
+        currentTask: {
+          ...currentTask,
+          status: "completed",
+          result: event.data.result as Record<string, unknown>,
+        },
+      });
     }
   },
 }));
