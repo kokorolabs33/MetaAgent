@@ -8,8 +8,6 @@ import {
   type NodeTypes,
   Background,
   BackgroundVariant,
-  useNodesState,
-  useEdgesState,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import type { SubTask } from "@/lib/types";
@@ -115,13 +113,10 @@ function layoutSubtasks(subtasks: SubTask[], agentNames?: Record<string, string>
 }
 
 export function DAGView({ subtasks, agentNames, onNodeClick }: DAGViewProps) {
-  const { nodes: initialNodes, edges: initialEdges } = useMemo(
+  const { nodes, edges } = useMemo(
     () => layoutSubtasks(subtasks, agentNames),
     [subtasks, agentNames],
   );
-
-  const [nodes, , onNodesChange] = useNodesState(initialNodes);
-  const [edges, , onEdgesChange] = useEdgesState(initialEdges);
 
   const handleNodeClick = useCallback(
     (_: React.MouseEvent, node: Node) => {
@@ -130,6 +125,12 @@ export function DAGView({ subtasks, agentNames, onNodeClick }: DAGViewProps) {
       }
     },
     [onNodeClick],
+  );
+
+  // Build a stable key so ReactFlow remounts when the DAG structure or status changes
+  const flowKey = useMemo(
+    () => subtasks.map((s) => `${s.id}:${s.status}:${agentNames?.[s.agent_id] ?? s.agent_id}`).join("|"),
+    [subtasks, agentNames],
   );
 
   if (subtasks.length === 0) {
@@ -143,10 +144,9 @@ export function DAGView({ subtasks, agentNames, onNodeClick }: DAGViewProps) {
   return (
     <div className="h-full w-full">
       <ReactFlow
+        key={flowKey}
         nodes={nodes}
         edges={edges}
-        onNodesChange={onNodesChange}
-        onEdgesChange={onEdgesChange}
         onNodeClick={handleNodeClick}
         nodeTypes={nodeTypes}
         fitView
