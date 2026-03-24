@@ -193,7 +193,10 @@ func (h *MessageHandler) routeToAgents(ctx context.Context, taskID string, menti
 			// Exact match or agent name starts with mention
 			if agentLower == mentionLower || strings.HasPrefix(agentLower, mentionLower+" ") || strings.Contains(agentLower, mentionLower) {
 				go func(sub activeSubtask) {
-					if err := h.Executor.SendFollowUp(ctx, taskID, sub.subtaskID, sub.agentID, fmt.Sprintf("User message: %s", content)); err != nil {
+					// Use background context — the HTTP request context will be canceled
+					// after the response is sent, but the A2A follow-up call takes time.
+					bgCtx := context.Background()
+					if err := h.Executor.SendFollowUp(bgCtx, taskID, sub.subtaskID, sub.agentID, fmt.Sprintf("User message: %s", content)); err != nil {
 						log.Printf("routeToAgents: follow-up to agent %s failed: %v", sub.agentName, err)
 					}
 				}(as)
