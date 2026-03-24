@@ -9,6 +9,8 @@ Thumbs.db
 
 # === Backend (Go) ===
 /server
+/llmagent
+/mockagent
 *.exe
 tmp/
 

@@ -1,0 +1,52 @@
+# docker-compose.agents.yml
+# Deal Review agents - 4 LLM-powered A2A agents
+#
+# Usage:
+#   docker compose -f docker-compose.agents.yml up --build
+#
+# Requires: ANTHROPIC_API_KEY in environment or .env file
+
+services:
+  legal-agent:
+    build:
+      context: .
+      dockerfile: cmd/llmagent/Dockerfile
+    command: ["--role=legal", "--port=9091"]
+    ports:
+      - "9091:9091"
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+    restart: unless-stopped
+
+  finance-agent:
+    build:
+      context: .
+      dockerfile: cmd/llmagent/Dockerfile
+    command: ["--role=finance", "--port=9092"]
+    ports:
+      - "9092:9092"
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+    restart: unless-stopped
+
+  technical-agent:
+    build:
+      context: .
+      dockerfile: cmd/llmagent/Dockerfile
+    command: ["--role=technical", "--port=9093"]
+    ports:
+      - "9093:9093"
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+    restart: unless-stopped
+
+  deal-review-agent:
+    build:
+      context: .
+      dockerfile: cmd/llmagent/Dockerfile
+    command: ["--role=deal-review", "--port=9094"]
+    ports:
+      - "9094:9094"
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+    restart: unless-stopped
