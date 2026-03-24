@@ -94,15 +94,15 @@ func (e *LLMExecutor) HandleMessage(
 	e.convos[contextID] = append(e.convos[contextID], Message{Role: "assistant", Content: response})
 	e.mu.Unlock()
 
-	// For finance role: check if LLM output contains needs_input
+	// For finance role: check if LLM output contains "ACTION REQUIRED:" line
 	if e.role.ID == "finance" {
-		cleaned := stripCodeFences(response)
-		var parsed map[string]any
-		if jsonErr := json.Unmarshal([]byte(cleaned), &parsed); jsonErr == nil {
-			if ni, ok := parsed["needs_input"].(map[string]any); ok {
-				msg, _ := ni["message"].(string)
+		for _, line := range strings.Split(response, "\n") {
+			trimmed := strings.TrimSpace(line)
+			if strings.HasPrefix(trimmed, "ACTION REQUIRED:") {
+				msg := strings.TrimPrefix(trimmed, "ACTION REQUIRED:")
+				msg = strings.TrimSpace(msg)
 				if msg != "" {
-					log.Printf("finance agent: needs_input triggered: %s", msg)
+					log.Printf("finance agent: input required: %s", msg)
 					return response, true, msg, nil
 				}
 			}

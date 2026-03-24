@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useCallback } from "react";
+import { useMemo, useCallback, useEffect } from "react";
 import {
   ReactFlow,
   type Node,
@@ -8,6 +8,10 @@ import {
   type NodeTypes,
   Background,
   BackgroundVariant,
+  useNodesState,
+  useEdgesState,
+  useReactFlow,
+  ReactFlowProvider,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import type { SubTask } from "@/lib/types";
@@ -19,46 +23,36 @@ const nodeTypes: NodeTypes = {
 
 interface DAGViewProps {
   subtasks: SubTask[];
-  agentNames?: Record<string, string>; // agent_id → agent name
+  agentNames?: Record<string, string>;
   onNodeClick?: (subtaskId: string) => void;
 }
 
-/**
- * Simple layered layout algorithm:
- * 1. Find subtasks with no depends_on -> layer 0
- * 2. Each subsequent layer = max(dependency layers) + 1
- * 3. Position: x = layer * 280, y = index_within_layer * 120
- */
-function layoutSubtasks(subtasks: SubTask[], agentNames?: Record<string, string>): { nodes: Node[]; edges: Edge[] } {
+function layoutSubtasks(
+  subtasks: SubTask[],
+  agentNames?: Record<string, string>,
+): { nodes: Node[]; edges: Edge[] } {
   if (subtasks.length === 0) return { nodes: [], edges: [] };
 
-  // Build dependency map
   const layerMap = new Map<string, number>();
   const subtaskMap = new Map<string, SubTask>();
   for (const st of subtasks) {
     subtaskMap.set(st.id, st);
   }
 
-  // Compute layer for each subtask via topological ordering
   function getLayer(id: string, visited: Set<string>): number {
     if (layerMap.has(id)) return layerMap.get(id)!;
-    if (visited.has(id)) return 0; // cycle guard
+    if (visited.has(id)) return 0;
     visited.add(id);
-
     const st = subtaskMap.get(id);
     if (!st || st.depends_on.length === 0) {
       layerMap.set(id, 0);
       return 0;
     }
-
     let maxDepLayer = 0;
     for (const depId of st.depends_on) {
       const depLayer = getLayer(depId, visited);
-      if (depLayer + 1 > maxDepLayer) {
-        maxDepLayer = depLayer + 1;
-      }
+      if (depLayer + 1 > maxDepLayer) maxDepLayer = depLayer + 1;
     }
-
     layerMap.set(id, maxDepLayer);
     return maxDepLayer;
   }
@@ -67,7 +61,6 @@ function layoutSubtasks(subtasks: SubTask[], agentNames?: Record<string, string>
     getLayer(st.id, new Set<string>());
   }
 
-  // Group by layer
   const layers = new Map<number, SubTask[]>();
   for (const st of subtasks) {
     const layer = layerMap.get(st.id) ?? 0;
@@ -76,7 +69,6 @@ function layoutSubtasks(subtasks: SubTask[], agentNames?: Record<string, string>
     layers.set(layer, group);
   }
 
-  // Build nodes
   const nodes: Node[] = [];
   for (const [layer, group] of layers.entries()) {
     for (let i = 0; i < group.length; i++) {
@@ -84,7 +76,7 @@ function layoutSubtasks(subtasks: SubTask[], agentNames?: Record<string, string>
       nodes.push({
         id: st.id,
         type: "subtask",
-        position: { x: layer * 280, y: i * 130 },
+        position: { x: layer * 300, y: i * 140 },
         data: {
           label: st.id,
           agentName: agentNames?.[st.agent_id] ?? st.agent_id,
@@ -95,7 +87,6 @@ function layoutSubtasks(subtasks: SubTask[], agentNames?: Record<string, string>
     }
   }
 
-  // Build edges
   const edges: Edge[] = [];
   for (const st of subtasks) {
     for (const depId of st.depends_on) {
@@ -112,25 +103,37 @@ function layoutSubtasks(subtasks: SubTask[], agentNames?: Record<string, string>
   return { nodes, edges };
 }
 
-export function DAGView({ subtasks, agentNames, onNodeClick }: DAGViewProps) {
-  const { nodes, edges } = useMemo(
+function DAGViewInner({ subtasks, agentNames, onNodeClick }: DAGViewProps) {
+  const { nodes: layoutNodes, edges: layoutEdges } = useMemo(
     () => layoutSubtasks(subtasks, agentNames),
     [subtasks, agentNames],
   );
 
+  const [nodes, setNodes, onNodesChange] = useNodesState(layoutNodes);
+  const [edges, setEdges, onEdgesChange] = useEdgesState(layoutEdges);
+  const { fitView } = useReactFlow();
+
+  // Sync nodes/edges when subtasks or agentNames change
+  useEffect(() => {
+    setNodes(layoutNodes);
+    setEdges(layoutEdges);
+  }, [layoutNodes, layoutEdges, setNodes, setEdges]);
+
+  // Fit view when nodes first appear (from 0 to N)
+  const nodeCount = subtasks.length;
+  useEffect(() => {
+    if (nodeCount > 0) {
+      // Small delay to let ReactFlow measure the nodes
+      const t = setTimeout(() => fitView({ padding: 0.2 }), 100);
+      return () => clearTimeout(t);
+    }
+  }, [nodeCount, fitView]);
+
   const handleNodeClick = useCallback(
     (_: React.MouseEvent, node: Node) => {
-      if (onNodeClick) {
-        onNodeClick(node.id);
-      }
+      if (onNodeClick) onNodeClick(node.id);
     },
     [onNodeClick],
-  );
-
-  // Build a stable key so ReactFlow remounts when the DAG structure or status changes
-  const flowKey = useMemo(
-    () => subtasks.map((s) => `${s.id}:${s.status}:${agentNames?.[s.agent_id] ?? s.agent_id}`).join("|"),
-    [subtasks, agentNames],
   );
 
   if (subtasks.length === 0) {
@@ -142,20 +145,29 @@ export function DAGView({ subtasks, agentNames, onNodeClick }: DAGViewProps) {
   }
 
   return (
+    <ReactFlow
+      nodes={nodes}
+      edges={edges}
+      onNodesChange={onNodesChange}
+      onEdgesChange={onEdgesChange}
+      onNodeClick={handleNodeClick}
+      nodeTypes={nodeTypes}
+      fitView
+      minZoom={0.3}
+      maxZoom={1.5}
+      proOptions={{ hideAttribution: true }}
+    >
+      <Background variant={BackgroundVariant.Dots} color="#374151" gap={20} />
+    </ReactFlow>
+  );
+}
+
+export function DAGView(props: DAGViewProps) {
+  return (
     <div className="h-full w-full">
-      <ReactFlow
-        key={flowKey}
-        nodes={nodes}
-        edges={edges}
-        onNodeClick={handleNodeClick}
-        nodeTypes={nodeTypes}
-        fitView
-        minZoom={0.3}
-        maxZoom={1.5}
-        proOptions={{ hideAttribution: true }}
-      >
-        <Background variant={BackgroundVariant.Dots} color="#374151" gap={20} />
-      </ReactFlow>
+      <ReactFlowProvider>
+        <DAGViewInner {...props} />
+      </ReactFlowProvider>
     </div>
   );
 }
