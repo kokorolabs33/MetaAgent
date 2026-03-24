@@ -183,16 +183,21 @@ func (h *MessageHandler) routeToAgents(ctx context.Context, taskID string, menti
 		return
 	}
 
-	// Match mentions against active agent names (case-insensitive).
-	mentionSet := make(map[string]bool, len(mentions))
-	for _, m := range mentions {
-		mentionSet[strings.ToLower(m)] = true
-	}
-
+	// Match mentions against active agent names.
+	// Supports partial match: @Finance matches "Finance Review Agent"
+	// because the regex only captures the first word after @.
 	for _, as := range active {
-		if mentionSet[strings.ToLower(as.agentName)] {
-			if err := h.Executor.SendFollowUp(ctx, taskID, as.subtaskID, as.agentID, fmt.Sprintf("User message: %s", content)); err != nil {
-				log.Printf("routeToAgents: follow-up to agent %s failed: %v", as.agentName, err)
+		agentLower := strings.ToLower(as.agentName)
+		for _, m := range mentions {
+			mentionLower := strings.ToLower(m)
+			// Exact match or agent name starts with mention
+			if agentLower == mentionLower || strings.HasPrefix(agentLower, mentionLower+" ") || strings.Contains(agentLower, mentionLower) {
+				go func(sub activeSubtask) {
+					if err := h.Executor.SendFollowUp(ctx, taskID, sub.subtaskID, sub.agentID, fmt.Sprintf("User message: %s", content)); err != nil {
+						log.Printf("routeToAgents: follow-up to agent %s failed: %v", sub.agentName, err)
+					}
+				}(as)
+				break
 			}
 		}
 	}

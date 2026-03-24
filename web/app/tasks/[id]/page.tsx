@@ -228,6 +228,7 @@ export default function TaskDetailPage() {
           <div className="flex-1">
             <DAGView
               subtasks={currentTask.subtasks}
+              agentNames={Object.fromEntries(allAgents.map((a) => [a.id, a.name]))}
               onNodeClick={(subtaskId) => {
                 const _id = subtaskId;
                 void _id;

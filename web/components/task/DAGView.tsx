@@ -21,6 +21,7 @@ const nodeTypes: NodeTypes = {
 
 interface DAGViewProps {
   subtasks: SubTask[];
+  agentNames?: Record<string, string>; // agent_id → agent name
   onNodeClick?: (subtaskId: string) => void;
 }
 
@@ -30,7 +31,7 @@ interface DAGViewProps {
  * 2. Each subsequent layer = max(dependency layers) + 1
  * 3. Position: x = layer * 280, y = index_within_layer * 120
  */
-function layoutSubtasks(subtasks: SubTask[]): { nodes: Node[]; edges: Edge[] } {
+function layoutSubtasks(subtasks: SubTask[], agentNames?: Record<string, string>): { nodes: Node[]; edges: Edge[] } {
   if (subtasks.length === 0) return { nodes: [], edges: [] };
 
   // Build dependency map
@@ -88,7 +89,7 @@ function layoutSubtasks(subtasks: SubTask[]): { nodes: Node[]; edges: Edge[] } {
         position: { x: layer * 280, y: i * 130 },
         data: {
           label: st.id,
-          agentName: st.agent_id,
+          agentName: agentNames?.[st.agent_id] ?? st.agent_id,
           instruction: st.instruction,
           status: st.status,
         },
@@ -113,10 +114,10 @@ function layoutSubtasks(subtasks: SubTask[]): { nodes: Node[]; edges: Edge[] } {
   return { nodes, edges };
 }
 
-export function DAGView({ subtasks, onNodeClick }: DAGViewProps) {
+export function DAGView({ subtasks, agentNames, onNodeClick }: DAGViewProps) {
   const { nodes: initialNodes, edges: initialEdges } = useMemo(
-    () => layoutSubtasks(subtasks),
-    [subtasks],
+    () => layoutSubtasks(subtasks, agentNames),
+    [subtasks, agentNames],
   );
 
   const [nodes, , onNodesChange] = useNodesState(initialNodes);

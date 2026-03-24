@@ -444,8 +444,12 @@ func (e *DAGExecutor) runSubtask(
 		Endpoint:     agent.Endpoint,
 	})
 
-	// System message: agent started
-	e.publishSystemMessage(ctx, task.ID, fmt.Sprintf("%s started working on: %s", agent.Name, st.Instruction))
+	// System message: agent started (truncate instruction for readability)
+	instrSummary := st.Instruction
+	if len(instrSummary) > 100 {
+		instrSummary = instrSummary[:97] + "..."
+	}
+	e.publishSystemMessage(ctx, task.ID, fmt.Sprintf("%s started working on: %s", agent.Name, instrSummary))
 
 	// Send A2A message to agent
 	result, err := e.A2AClient.SendMessage(ctx, agent.Endpoint, task.ID, "", parts)
