@@ -99,7 +99,7 @@ type createAgentRequest struct {
 }
 
 // Create adds a new agent to the organization.
-// It fetches the AgentCard from the endpoint to populate metadata.
+// Only endpoint is required — all other fields auto-populated from AgentCard.
 func (h *AgentHandler) Create(w http.ResponseWriter, r *http.Request) {
 	var req createAgentRequest
 	if err := decodeJSON(w, r, &req); err != nil {
@@ -107,13 +107,7 @@ func (h *AgentHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	req.Name = strings.TrimSpace(req.Name)
 	req.Endpoint = strings.TrimSpace(req.Endpoint)
-
-	if req.Name == "" {
-		jsonError(w, "name is required", http.StatusBadRequest)
-		return
-	}
 	if req.Endpoint == "" {
 		jsonError(w, "endpoint is required", http.StatusBadRequest)
 		return
@@ -122,7 +116,7 @@ func (h *AgentHandler) Create(w http.ResponseWriter, r *http.Request) {
 	org := ctxutil.OrgFromCtx(r.Context())
 	now := time.Now().UTC()
 
-	// Try to discover agent card from endpoint
+	// Discover agent card from endpoint (auto-populate name, description, etc.)
 	var agentCardURL string
 	var agentCard json.RawMessage
 	var skills json.RawMessage
@@ -138,8 +132,8 @@ func (h *AgentHandler) Create(w http.ResponseWriter, r *http.Request) {
 		skillsJSON, _ := json.Marshal(discovered.Skills)
 		skills = json.RawMessage(skillsJSON)
 
-		// Use card values as defaults if not provided
-		if req.Name == "" && discovered.Name != "" {
+		// Use card values as defaults if not provided in request
+		if strings.TrimSpace(req.Name) == "" && discovered.Name != "" {
 			req.Name = discovered.Name
 		}
 		if req.Description == "" && discovered.Description != "" {
@@ -148,6 +142,24 @@ func (h *AgentHandler) Create(w http.ResponseWriter, r *http.Request) {
 		if req.Version == "" && discovered.Version != "" {
 			req.Version = discovered.Version
 		}
+		// Build capabilities list from card's boolean flags
+		if len(req.Capabilities) == 0 {
+			if discovered.Capabilities.Streaming {
+				req.Capabilities = append(req.Capabilities, "streaming")
+			}
+			if discovered.Capabilities.PushNotifications {
+				req.Capabilities = append(req.Capabilities, "pushNotifications")
+			}
+			if discovered.Capabilities.StateTransitionHistory {
+				req.Capabilities = append(req.Capabilities, "stateTransitionHistory")
+			}
+		}
+	}
+
+	req.Name = strings.TrimSpace(req.Name)
+	if req.Name == "" {
+		jsonError(w, "name is required (and could not be discovered from AgentCard)", http.StatusBadRequest)
+		return
 	}
 
 	if skills == nil {
