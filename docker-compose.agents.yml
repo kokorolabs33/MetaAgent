@@ -4,7 +4,7 @@
 # Usage:
 #   docker compose -f docker-compose.agents.yml up --build
 #
-# Requires: CLAUDE_TOKEN in environment or .env file
+# Auth: mounts host ~/.claude/ for Claude CLI authentication
 
 services:
   legal-agent:
@@ -14,8 +14,9 @@ services:
     command: ["--role=legal", "--port=9091"]
     ports:
       - "9091:9091"
-    environment:
-      - CLAUDE_TOKEN=${CLAUDE_TOKEN}
+    volumes:
+      - ~/.claude:/root/.claude:ro
+      - ~/.claude.json:/root/.claude.json:ro
     restart: unless-stopped
 
   finance-agent:
@@ -25,8 +26,9 @@ services:
     command: ["--role=finance", "--port=9092"]
     ports:
       - "9092:9092"
-    environment:
-      - CLAUDE_TOKEN=${CLAUDE_TOKEN}
+    volumes:
+      - ~/.claude:/root/.claude:ro
+      - ~/.claude.json:/root/.claude.json:ro
     restart: unless-stopped
 
   technical-agent:
@@ -36,8 +38,9 @@ services:
     command: ["--role=technical", "--port=9093"]
     ports:
       - "9093:9093"
-    environment:
-      - CLAUDE_TOKEN=${CLAUDE_TOKEN}
+    volumes:
+      - ~/.claude:/root/.claude:ro
+      - ~/.claude.json:/root/.claude.json:ro
     restart: unless-stopped
 
   deal-review-agent:
@@ -47,6 +50,7 @@ services:
     command: ["--role=deal-review", "--port=9094"]
     ports:
       - "9094:9094"
-    environment:
-      - CLAUDE_TOKEN=${CLAUDE_TOKEN}
+    volumes:
+      - ~/.claude:/root/.claude:ro
+      - ~/.claude.json:/root/.claude.json:ro
     restart: unless-stopped
