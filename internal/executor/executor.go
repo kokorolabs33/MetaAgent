@@ -627,13 +627,18 @@ func (e *DAGExecutor) SendFollowUp(ctx context.Context, taskID, subtaskID, agent
 			log.Printf("executor: mark follow-up subtask %s completed: %v", subtaskID, err)
 		}
 
+		// Publish subtask.completed event so frontend updates DAG + banner
+		e.publishEvent(ctx, taskID, subtaskID, "subtask.completed", "agent", agentID, map[string]any{
+			"output": output,
+		})
+
 		// Publish completion to chat
+		var agentName string
+		_ = e.DB.QueryRow(ctx, `SELECT name FROM agents WHERE id = $1`, agentID).Scan(&agentName)
+		if agentName == "" {
+			agentName = agentID
+		}
 		if len(result.Artifacts) > 0 {
-			var agentName string
-			_ = e.DB.QueryRow(ctx, `SELECT name FROM agents WHERE id = $1`, agentID).Scan(&agentName)
-			if agentName == "" {
-				agentName = agentID
-			}
 			outputStr := string(result.Artifacts)
 			if len(outputStr) > 2 && outputStr[0] == '"' && outputStr[len(outputStr)-1] == '"' {
 				var unquoted string
@@ -643,6 +648,7 @@ func (e *DAGExecutor) SendFollowUp(ctx context.Context, taskID, subtaskID, agent
 			}
 			e.publishMessage(ctx, taskID, agentID, agentName, outputStr)
 		}
+		e.publishSystemMessage(ctx, taskID, fmt.Sprintf("%s completed the task", agentName))
 
 	case "input-required":
 		if _, err := e.DB.Exec(ctx, `UPDATE subtasks SET status = 'input_required' WHERE id = $1`, subtaskID); err != nil {
