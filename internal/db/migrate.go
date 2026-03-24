@@ -12,7 +12,7 @@ import (
 var migrationsFS embed.FS
 
 func RunMigrations(ctx context.Context, pool *pgxpool.Pool) error {
-	files := []string{"migrations/001_foundation.sql"}
+	files := []string{"migrations/001_foundation.sql", "migrations/004_a2a_migration.sql"}
 	for _, file := range files {
 		sql, err := migrationsFS.ReadFile(file)
 		if err != nil {

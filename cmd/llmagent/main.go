@@ -1,16 +1,17 @@
-// Package main implements a mock A2A agent server for testing.
-// It supports various behavior keywords in the instruction text to simulate different
-// agent scenarios (echo, slow, fail, input-required, etc.).
+// Package main implements LLM-powered Deal Review agents as A2A servers.
+// A single binary serves one of 4 roles (legal, finance, technical, deal-review)
+// selected via the --role flag. Each role has a distinct system prompt and calls
+// the Claude Messages API to generate structured analysis.
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
 	"net/http"
-	"strconv"
-	"strings"
+	"os"
 	"sync"
 	"time"
 
@@ -19,7 +20,7 @@ import (
 	"github.com/google/uuid"
 )
 
-// ---- A2A Protocol Types ----
+// ---- A2A Protocol Types (same as mockagent) ----
 
 type jsonRPCRequest struct {
 	JSONRPC string          `json:"jsonrpc"`
@@ -97,21 +98,37 @@ type cardSkill struct {
 // ---- Task State ----
 
 type taskState struct {
-	mu          sync.Mutex
-	ID          string
-	ContextID   string
-	Status      string // "working", "completed", "failed", "input-required"
-	Instruction string
-	Result      string
-	Error       string
+	mu        sync.Mutex
+	ID        string
+	ContextID string
+	Status    string // "working", "completed", "failed", "input-required"
+	Result    string
+	Error     string
 }
 
-var tasks sync.Map
+var (
+	tasks    sync.Map
+	executor *LLMExecutor
+)
 
 func main() {
-	port := flag.Int("port", 9090, "listen port")
-	name := flag.String("name", "Mock Agent", "agent name")
+	roleFlag := flag.String("role", "", "agent role: legal, finance, technical, deal-review")
+	port := flag.Int("port", 9091, "listen port")
 	flag.Parse()
+
+	if *roleFlag == "" {
+		fmt.Fprintf(os.Stderr, "Usage: llmagent --role=<legal|finance|technical|deal-review> [--port=9091]\n")
+		os.Exit(1)
+	}
+
+	role, ok := roles[*roleFlag]
+	if !ok {
+		fmt.Fprintf(os.Stderr, "Unknown role: %s\nAvailable: legal, finance, technical, deal-review\n", *roleFlag)
+		os.Exit(1)
+	}
+
+	claude := NewClaudeClient()
+	executor = NewLLMExecutor(role, claude)
 
 	baseURL := fmt.Sprintf("http://localhost:%d", *port)
 
@@ -122,8 +139,8 @@ func main() {
 	// A2A AgentCard discovery
 	r.Get("/.well-known/agent-card.json", func(w http.ResponseWriter, _ *http.Request) {
 		card := agentCard{
-			Name:        *name,
-			Description: "Mock agent for testing. Supports keyword-based behaviors.",
+			Name:        role.Name,
+			Description: role.Description,
 			URL:         baseURL,
 			Version:     "1.0.0",
 			Capabilities: map[string]bool{
@@ -132,10 +149,10 @@ func main() {
 				"stateTransitionHistory": false,
 			},
 			Skills: []cardSkill{
-				{ID: "mock", Name: "Mock Behavior", Description: "Simulates various agent behaviors via keywords"},
+				{ID: role.SkillID, Name: role.SkillName, Description: role.Description},
 			},
-			DefaultInputModes:  []string{"text/plain"},
-			DefaultOutputModes: []string{"text/plain", "application/json"},
+			DefaultInputModes:  []string{"text/plain", "application/json"},
+			DefaultOutputModes: []string{"application/json"},
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(card)
@@ -144,14 +161,14 @@ func main() {
 	// A2A JSON-RPC endpoint
 	r.Post("/", handleJSONRPC)
 
-	// Legacy health endpoint
+	// Health endpoint
 	r.Get("/health", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
 
 	addr := fmt.Sprintf(":%d", *port)
-	log.Printf("Mock A2A agent %q listening on %s", *name, addr)
+	log.Printf("%s listening on %s", role.Name, addr)
 	if err := http.ListenAndServe(addr, r); err != nil {
 		log.Fatalf("listen: %v", err)
 	}
@@ -164,9 +181,11 @@ func handleJSONRPC(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	ctx := r.Context()
+
 	switch req.Method {
 	case "message/send":
-		handleSendMessage(w, req)
+		handleSendMessage(ctx, w, req)
 	case "tasks/get":
 		handleGetTask(w, req)
 	case "tasks/cancel":
@@ -176,148 +195,161 @@ func handleJSONRPC(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func handleSendMessage(w http.ResponseWriter, req jsonRPCRequest) {
+func handleSendMessage(ctx context.Context, w http.ResponseWriter, req jsonRPCRequest) {
 	var params sendMessageParams
 	if err := json.Unmarshal(req.Params, &params); err != nil {
 		writeRPCError(w, req.ID, -32602, "Invalid params")
 		return
 	}
 
-	// Extract instruction text from message parts
-	instruction := ""
+	// Extract text and data parts from the message
+	var text string
+	var data map[string]any
 	for _, part := range params.Message.Parts {
 		if part.Text != "" {
-			instruction = part.Text
-			break
+			text = part.Text
+		}
+		if part.Data != nil {
+			// Data parts carry upstream analysis results
+			if m, ok := part.Data.(map[string]any); ok {
+				data = m
+			}
 		}
 	}
 
-	// Check if this is a follow-up to an existing task
+	contextID := params.ContextID
+	if contextID == "" {
+		contextID = uuid.New().String()
+	}
+
+	// Check if this is a follow-up to an existing task (input-required response)
 	if params.TaskID != "" {
 		if val, ok := tasks.Load(params.TaskID); ok {
 			ts := val.(*taskState)
 			ts.mu.Lock()
-			defer ts.mu.Unlock()
 
-			// Follow-up message completes the task
-			ts.Status = "completed"
-			ts.Result = fmt.Sprintf("received follow-up: %s", instruction)
+			if ts.Status == "input-required" {
+				ts.mu.Unlock()
 
-			writeRPCResult(w, req.ID, a2aTask{
-				ID:        ts.ID,
-				ContextID: ts.ContextID,
-				Status:    a2aStatus{State: "completed"},
-				Artifacts: []artifact{{
-					ArtifactID: uuid.New().String(),
-					Parts:      []messagePart{{Text: ts.Result}},
-				}},
-			})
-			return
+				// Process follow-up through the LLM
+				response, err := executor.HandleFollowUp(ctx, ts.ContextID, text)
+				if err != nil {
+					log.Printf("follow-up error: %v", err)
+					ts.mu.Lock()
+					ts.Status = "failed"
+					ts.Error = err.Error()
+					ts.mu.Unlock()
+					cleanupTask(ts.ID, ts.ContextID, executor)
+
+					writeRPCResult(w, req.ID, a2aTask{
+						ID:        ts.ID,
+						ContextID: ts.ContextID,
+						Status: a2aStatus{
+							State: "failed",
+							Message: &a2aMessage{
+								Role:  "agent",
+								Parts: []messagePart{{Text: err.Error()}},
+							},
+						},
+					})
+					return
+				}
+
+				ts.mu.Lock()
+				ts.Status = "completed"
+				ts.Result = response
+				ts.mu.Unlock()
+				cleanupTask(ts.ID, ts.ContextID, executor)
+
+				writeRPCResult(w, req.ID, a2aTask{
+					ID:        ts.ID,
+					ContextID: ts.ContextID,
+					Status:    a2aStatus{State: "completed"},
+					Artifacts: []artifact{{
+						ArtifactID: uuid.New().String(),
+						Parts:      []messagePart{{Text: response}},
+					}},
+				})
+				return
+			}
+			ts.mu.Unlock()
 		}
 	}
 
-	// New task — determine behavior from instruction keywords
+	// New task — process through the LLM
 	taskID := uuid.New().String()
 	ts := &taskState{
-		ID:          taskID,
-		ContextID:   params.ContextID,
-		Instruction: instruction,
-		Status:      "working",
+		ID:        taskID,
+		ContextID: contextID,
+		Status:    "working",
 	}
+	tasks.Store(taskID, ts)
 
-	switch {
-	case strings.HasPrefix(instruction, "echo:"):
-		msg := strings.TrimPrefix(instruction, "echo:")
-		ts.Status = "completed"
-		ts.Result = msg
-		tasks.Store(taskID, ts)
-
-		writeRPCResult(w, req.ID, a2aTask{
-			ID:        taskID,
-			ContextID: params.ContextID,
-			Status:    a2aStatus{State: "completed"},
-			Artifacts: []artifact{{
-				ArtifactID: uuid.New().String(),
-				Parts:      []messagePart{{Text: msg}},
-			}},
-		})
-		return
-
-	case strings.HasPrefix(instruction, "fail:"):
-		msg := strings.TrimPrefix(instruction, "fail:")
+	response, inputRequired, inputMessage, err := executor.HandleMessage(
+		ctx, contextID, text, data,
+	)
+	if err != nil {
+		log.Printf("LLM error: %v", err)
+		ts.mu.Lock()
 		ts.Status = "failed"
-		ts.Error = msg
-		tasks.Store(taskID, ts)
+		ts.Error = err.Error()
+		ts.mu.Unlock()
+		cleanupTask(taskID, contextID, executor)
 
 		writeRPCResult(w, req.ID, a2aTask{
 			ID:        taskID,
-			ContextID: params.ContextID,
+			ContextID: contextID,
 			Status: a2aStatus{
 				State: "failed",
 				Message: &a2aMessage{
 					Role:  "agent",
-					Parts: []messagePart{{Text: msg}},
+					Parts: []messagePart{{Text: err.Error()}},
 				},
 			},
 		})
 		return
+	}
 
-	case strings.HasPrefix(instruction, "input:"):
-		msg := strings.TrimPrefix(instruction, "input:")
+	if inputRequired {
+		ts.mu.Lock()
 		ts.Status = "input-required"
-		tasks.Store(taskID, ts)
+		ts.Result = response
+		ts.mu.Unlock()
 
 		writeRPCResult(w, req.ID, a2aTask{
 			ID:        taskID,
-			ContextID: params.ContextID,
+			ContextID: contextID,
 			Status: a2aStatus{
 				State: "input-required",
 				Message: &a2aMessage{
 					Role:  "agent",
-					Parts: []messagePart{{Text: msg}},
+					Parts: []messagePart{{Text: inputMessage}},
 				},
 			},
-		})
-		return
-
-	case strings.HasPrefix(instruction, "slow:"):
-		n := parseIntSuffix(instruction, "slow:")
-
-		// Simulate slow processing synchronously before returning
-		time.Sleep(time.Duration(n) * time.Second)
-
-		ts.Status = "completed"
-		ts.Result = fmt.Sprintf("completed after %d seconds", n)
-		tasks.Store(taskID, ts)
-
-		writeRPCResult(w, req.ID, a2aTask{
-			ID:        taskID,
-			ContextID: params.ContextID,
-			Status:    a2aStatus{State: "completed"},
 			Artifacts: []artifact{{
 				ArtifactID: uuid.New().String(),
-				Parts:      []messagePart{{Text: fmt.Sprintf("completed after %d seconds delay", n)}},
-			}},
-		})
-		return
-
-	default:
-		// Default: immediate completion
-		ts.Status = "completed"
-		ts.Result = "done"
-		tasks.Store(taskID, ts)
-
-		writeRPCResult(w, req.ID, a2aTask{
-			ID:        taskID,
-			ContextID: params.ContextID,
-			Status:    a2aStatus{State: "completed"},
-			Artifacts: []artifact{{
-				ArtifactID: uuid.New().String(),
-				Parts:      []messagePart{{Text: "done"}},
+				Parts:      []messagePart{{Text: response}},
 			}},
 		})
 		return
 	}
+
+	// Completed successfully
+	ts.mu.Lock()
+	ts.Status = "completed"
+	ts.Result = response
+	ts.mu.Unlock()
+	cleanupTask(taskID, contextID, executor)
+
+	writeRPCResult(w, req.ID, a2aTask{
+		ID:        taskID,
+		ContextID: contextID,
+		Status:    a2aStatus{State: "completed"},
+		Artifacts: []artifact{{
+			ArtifactID: uuid.New().String(),
+			Parts:      []messagePart{{Text: response}},
+		}},
+	})
 }
 
 func handleGetTask(w http.ResponseWriter, req jsonRPCRequest) {
@@ -362,6 +394,12 @@ func handleGetTask(w http.ResponseWriter, req jsonRPCRequest) {
 			Role:  "agent",
 			Parts: []messagePart{{Text: "Waiting for input"}},
 		}
+		if ts.Result != "" {
+			task.Artifacts = []artifact{{
+				ArtifactID: uuid.New().String(),
+				Parts:      []messagePart{{Text: ts.Result}},
+			}}
+		}
 	}
 
 	writeRPCResult(w, req.ID, task)
@@ -384,6 +422,7 @@ func handleCancelTask(w http.ResponseWriter, req jsonRPCRequest) {
 	ts.mu.Lock()
 	ts.Status = "canceled"
 	ts.mu.Unlock()
+	cleanupTask(ts.ID, ts.ContextID, executor)
 
 	writeRPCResult(w, req.ID, a2aTask{
 		ID:        ts.ID,
@@ -410,12 +449,11 @@ func writeRPCError(w http.ResponseWriter, id string, code int, message string) {
 	})
 }
 
-// parseIntSuffix extracts the integer after a keyword prefix (e.g., "slow:3" -> 3).
-// Returns 2 as default if parsing fails.
-func parseIntSuffix(s, prefix string) int {
-	v, err := strconv.Atoi(strings.TrimPrefix(s, prefix))
-	if err != nil || v <= 0 {
-		return 2
-	}
-	return v
+// cleanupTask schedules removal of a completed/failed/canceled task and its
+// conversation history after a grace period, preventing unbounded map growth.
+func cleanupTask(taskID string, contextID string, ex *LLMExecutor) {
+	time.AfterFunc(5*time.Minute, func() {
+		tasks.Delete(taskID)
+		ex.CleanupContext(contextID)
+	})
 }

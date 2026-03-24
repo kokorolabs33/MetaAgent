@@ -228,6 +228,7 @@ export default function TaskDetailPage() {
           <div className="flex-1">
             <DAGView
               subtasks={currentTask.subtasks}
+              agentNames={Object.fromEntries(allAgents.map((a) => [a.id, a.name]))}
               onNodeClick={(subtaskId) => {
                 const _id = subtaskId;
                 void _id;
@@ -250,15 +251,15 @@ export default function TaskDetailPage() {
         </div>
       </div>
 
-      {/* Task Result (shown when completed) */}
-      {currentTask.status === "completed" && currentTask.result && (
-        <div className="border-t border-border bg-green-950/20 px-4 py-3">
-          <div className="mb-1 text-xs font-semibold uppercase tracking-wider text-green-400">
-            Result
+      {/* Task completed banner */}
+      {currentTask.status === "completed" && (
+        <div className="border-t border-green-500/30 bg-green-950/20 px-4 py-2">
+          <div className="flex items-center gap-2 text-sm text-green-400">
+            <span className="font-semibold">Task completed</span>
+            <span className="text-xs text-green-500/70">
+              — {currentTask.subtasks.filter(st => st.status === "completed").length}/{currentTask.subtasks.length} subtasks finished
+            </span>
           </div>
-          <pre className="max-h-40 overflow-auto rounded bg-gray-900 p-3 text-xs text-gray-300">
-            {JSON.stringify(currentTask.result, null, 2)}
-          </pre>
         </div>
       )}
 

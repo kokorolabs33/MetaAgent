@@ -198,28 +198,56 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
       }
     }
 
-    // Update subtask status from subtask lifecycle events
+    // Handle subtask lifecycle events
     if (event.type.startsWith("subtask.")) {
       const subtaskId = event.subtask_id;
       if (subtaskId) {
+        // Handle subtask creation — add new subtask to the list
+        if (event.type === "subtask.created") {
+          const data = event.data as Record<string, unknown>;
+          const exists = currentTask.subtasks.some((st) => st.id === subtaskId);
+          if (!exists) {
+            const newSubtask: SubTask = {
+              id: subtaskId,
+              task_id: currentTask.id,
+              agent_id: (data.agent_id as string) ?? "",
+              instruction: (data.instruction as string) ?? "",
+              depends_on: (data.depends_on as string[]) ?? [],
+              status: "pending",
+              attempt: 0,
+              max_attempts: 3,
+              created_at: event.created_at,
+            };
+            set({
+              currentTask: {
+                ...currentTask,
+                subtasks: [...currentTask.subtasks, newSubtask],
+              },
+            });
+          }
+          return;
+        }
+
+        // Handle subtask status updates
         const statusMap: Record<string, SubTask["status"]> = {
           "subtask.running": "running",
           "subtask.completed": "completed",
           "subtask.failed": "failed",
-          "subtask.waiting_for_input": "waiting_for_input",
+          "subtask.input_required": "input_required",
           "subtask.blocked": "blocked",
           "subtask.cancelled": "cancelled",
         };
         const newStatus = statusMap[event.type];
         if (newStatus) {
+          const updatedSubtasks = currentTask.subtasks.map((st) =>
+            st.id === subtaskId
+              ? { ...st, status: newStatus }
+              : st,
+          );
           set({
             currentTask: {
               ...currentTask,
-              subtasks: currentTask.subtasks.map((st) =>
-                st.id === subtaskId
-                  ? { ...st, status: newStatus }
-                  : st,
-              ),
+              subtasks: updatedSubtasks,
             },
           });
         }
@@ -239,12 +267,15 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
           const msg: Message = {
             id: msgId,
             task_id: get().currentTask?.id ?? "",
-            sender_type: (data.sender_type as Message["sender_type"]) ?? "system",
-            sender_id: data.sender_id as string | undefined,
+            // sender_type: prefer data.sender_type, fallback to event.actor_type
+            sender_type: (data.sender_type as Message["sender_type"])
+              ?? (event.actor_type as Message["sender_type"])
+              ?? "system",
+            sender_id: (data.sender_id as string | undefined) ?? event.actor_id,
             sender_name: (data.sender_name as string) ?? "Unknown",
             content: data.content as string,
             mentions: (data.mentions as string[]) ?? [],
-            created_at: (data.created_at as string) ?? new Date().toISOString(),
+            created_at: (data.created_at as string) ?? event.created_at ?? new Date().toISOString(),
           };
           return { messages: [...s.messages, msg] };
         });

@@ -144,11 +144,7 @@ export default function AgentDetailPage() {
           <DetailRow label="Name" value={agent.name} />
           <DetailRow label="Description" value={agent.description || "---"} />
           <DetailRow label="Endpoint" value={agent.endpoint} mono />
-          <DetailRow
-            label="Adapter Type"
-            value={agent.adapter_type === "http_poll" ? "HTTP Poll" : "Native"}
-          />
-          <DetailRow label="Auth Type" value={agent.auth_type} />
+          <DetailRow label="Agent Card URL" value={agent.agent_card_url} mono />
           <DetailRow label="Version" value={agent.version || "---"} />
 
           <div className="space-y-1">
