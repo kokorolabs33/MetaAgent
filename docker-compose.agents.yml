@@ -4,7 +4,7 @@
 # Usage:
 #   docker compose -f docker-compose.agents.yml up --build
 #
-# Requires: ANTHROPIC_API_KEY in environment or .env file
+# Requires: CLAUDE_TOKEN in environment or .env file
 
 services:
   legal-agent:
@@ -15,7 +15,7 @@ services:
     ports:
       - "9091:9091"
     environment:
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - CLAUDE_TOKEN=${CLAUDE_TOKEN}
     restart: unless-stopped
 
   finance-agent:
@@ -26,7 +26,7 @@ services:
     ports:
       - "9092:9092"
     environment:
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - CLAUDE_TOKEN=${CLAUDE_TOKEN}
     restart: unless-stopped
 
   technical-agent:
@@ -37,7 +37,7 @@ services:
     ports:
       - "9093:9093"
     environment:
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - CLAUDE_TOKEN=${CLAUDE_TOKEN}
     restart: unless-stopped
 
   deal-review-agent:
@@ -48,5 +48,5 @@ services:
     ports:
       - "9094:9094"
     environment:
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - CLAUDE_TOKEN=${CLAUDE_TOKEN}
     restart: unless-stopped

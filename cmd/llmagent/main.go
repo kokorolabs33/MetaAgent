@@ -128,10 +128,6 @@ func main() {
 	}
 
 	claude := NewClaudeClient()
-	if claude.APIKey == "" {
-		log.Fatal("ANTHROPIC_API_KEY environment variable is required")
-	}
-
 	executor = NewLLMExecutor(role, claude)
 
 	baseURL := fmt.Sprintf("http://localhost:%d", *port)
@@ -172,7 +168,7 @@ func main() {
 	})
 
 	addr := fmt.Sprintf(":%d", *port)
-	log.Printf("%s listening on %s (model: %s)", role.Name, addr, claude.Model)
+	log.Printf("%s listening on %s", role.Name, addr)
 	if err := http.ListenAndServe(addr, r); err != nil {
 		log.Fatalf("listen: %v", err)
 	}
