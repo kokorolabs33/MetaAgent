@@ -83,7 +83,7 @@ function renderContent(content: string): React.ReactNode {
     const parsed = tryParseJSON(fenceContent);
     const displayText = parsed !== null ? JSON.stringify(parsed, null, 2) : fenceContent;
     return (
-      <pre className="mt-1 max-h-64 overflow-auto rounded bg-gray-900 p-2 text-xs text-gray-300">
+      <pre className="mt-1 max-h-48 max-w-full overflow-auto rounded bg-gray-900 p-2 text-xs text-gray-300">
         <code>{displayText}</code>
       </pre>
     );
@@ -93,7 +93,7 @@ function renderContent(content: string): React.ReactNode {
   const parsed = tryParseJSON(content);
   if (parsed !== null) {
     return (
-      <pre className="mt-1 max-h-64 overflow-auto rounded bg-gray-900 p-2 text-xs text-gray-300">
+      <pre className="mt-1 max-h-48 max-w-full overflow-auto rounded bg-gray-900 p-2 text-xs text-gray-300">
         <code>{JSON.stringify(parsed, null, 2)}</code>
       </pre>
     );
@@ -158,7 +158,7 @@ export function ChatMessage({ message }: ChatMessageProps) {
             {formatTime(message.created_at)}
           </span>
         </div>
-        <div className="mt-0.5 text-sm leading-relaxed text-gray-300">
+        <div className="mt-0.5 max-w-full overflow-hidden text-sm leading-relaxed text-gray-300">
           {renderContent(message.content)}
         </div>
       </div>
