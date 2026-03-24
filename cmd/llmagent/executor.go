@@ -14,18 +14,41 @@ type LLMExecutor struct {
 	role   Role
 	claude *ClaudeClient
 
-	// Conversation history per context (contextId -> messages).
-	mu     sync.Mutex
-	convos map[string][]Message
+	// mu protects convos and ctxLocks map access.
+	mu       sync.Mutex
+	convos   map[string][]Message
+	ctxLocks map[string]*sync.Mutex // per-context lock to serialize calls
 }
 
 // NewLLMExecutor creates an executor for the given role.
 func NewLLMExecutor(role Role, claude *ClaudeClient) *LLMExecutor {
 	return &LLMExecutor{
-		role:   role,
-		claude: claude,
-		convos: make(map[string][]Message),
+		role:     role,
+		claude:   claude,
+		convos:   make(map[string][]Message),
+		ctxLocks: make(map[string]*sync.Mutex),
 	}
+}
+
+// contextLock returns (and lazily creates) the per-context mutex for contextID.
+// The caller must not hold e.mu when using the returned mutex.
+func (e *LLMExecutor) contextLock(contextID string) *sync.Mutex {
+	e.mu.Lock()
+	mu, ok := e.ctxLocks[contextID]
+	if !ok {
+		mu = &sync.Mutex{}
+		e.ctxLocks[contextID] = mu
+	}
+	e.mu.Unlock()
+	return mu
+}
+
+// CleanupContext removes conversation history and the per-context lock for contextID.
+func (e *LLMExecutor) CleanupContext(contextID string) {
+	e.mu.Lock()
+	delete(e.convos, contextID)
+	delete(e.ctxLocks, contextID)
+	e.mu.Unlock()
 }
 
 // HandleMessage processes an incoming A2A message and returns the LLM response.
@@ -46,11 +69,16 @@ func (e *LLMExecutor) HandleMessage(
 		userContent = text + "\n\nUpstream analysis data:\n" + string(dataJSON)
 	}
 
+	// Acquire per-context lock so only one Claude call per contextID is in flight.
+	ctxMu := e.contextLock(contextID)
+	ctxMu.Lock()
+	defer ctxMu.Unlock()
+
+	// Append user message, snapshot for the call, then call Claude and append reply.
 	e.mu.Lock()
 	convo := e.convos[contextID]
 	convo = append(convo, Message{Role: "user", Content: userContent})
 	e.convos[contextID] = convo
-	// Copy for use outside the lock.
 	msgs := make([]Message, len(convo))
 	copy(msgs, convo)
 	e.mu.Unlock()
@@ -87,6 +115,11 @@ func (e *LLMExecutor) HandleMessage(
 // HandleFollowUp processes a follow-up message for an existing conversation
 // (e.g. after an input-required state).
 func (e *LLMExecutor) HandleFollowUp(ctx context.Context, contextID string, text string) (string, error) {
+	// Acquire per-context lock so only one Claude call per contextID is in flight.
+	ctxMu := e.contextLock(contextID)
+	ctxMu.Lock()
+	defer ctxMu.Unlock()
+
 	e.mu.Lock()
 	convo := e.convos[contextID]
 	convo = append(convo, Message{Role: "user", Content: text})
@@ -109,12 +142,26 @@ func (e *LLMExecutor) HandleFollowUp(ctx context.Context, contextID string, text
 
 // stripCodeFences removes markdown code fences that LLMs sometimes wrap around JSON.
 func stripCodeFences(s string) string {
-	cleaned := strings.TrimSpace(s)
-	if strings.HasPrefix(cleaned, "```") {
-		lines := strings.Split(cleaned, "\n")
-		if len(lines) > 2 {
-			cleaned = strings.Join(lines[1:len(lines)-1], "\n")
-		}
+	s = strings.TrimSpace(s)
+	if !strings.HasPrefix(s, "```") {
+		return s
 	}
-	return strings.TrimSpace(cleaned)
+	lines := strings.Split(s, "\n")
+	if len(lines) < 3 {
+		return s
+	}
+	// Remove opening fence line.
+	lines = lines[1:]
+	// Remove the last non-empty line if it is a closing fence.
+	for i := len(lines) - 1; i >= 0; i-- {
+		trimmed := strings.TrimSpace(lines[i])
+		if trimmed == "" {
+			continue
+		}
+		if trimmed == "```" {
+			lines = lines[:i]
+		}
+		break
+	}
+	return strings.TrimSpace(strings.Join(lines, "\n"))
 }

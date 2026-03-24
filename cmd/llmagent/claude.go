@@ -15,10 +15,11 @@ const claudeAPIURL = "https://api.anthropic.com/v1/messages"
 
 // ClaudeClient calls the Anthropic Messages API.
 type ClaudeClient struct {
-	APIKey     string
-	Model      string
-	MaxTokens  int
-	HTTPClient *http.Client
+	APIKey      string
+	Model       string
+	MaxTokens   int
+	Temperature float64
+	HTTPClient  *http.Client
 }
 
 // NewClaudeClient creates a client with defaults from environment variables.
@@ -30,9 +31,10 @@ func NewClaudeClient() *ClaudeClient {
 	}
 
 	return &ClaudeClient{
-		APIKey:    apiKey,
-		Model:     model,
-		MaxTokens: 4096,
+		APIKey:      apiKey,
+		Model:       model,
+		MaxTokens:   4096,
+		Temperature: 0.3,
 		HTTPClient: &http.Client{
 			Timeout: 3 * time.Minute,
 		},
@@ -47,10 +49,11 @@ type Message struct {
 
 // claudeRequest is the Messages API request body.
 type claudeRequest struct {
-	Model     string    `json:"model"`
-	MaxTokens int       `json:"max_tokens"`
-	System    string    `json:"system,omitempty"`
-	Messages  []Message `json:"messages"`
+	Model       string    `json:"model"`
+	MaxTokens   int       `json:"max_tokens"`
+	Temperature float64   `json:"temperature,omitempty"`
+	System      string    `json:"system,omitempty"`
+	Messages    []Message `json:"messages"`
 }
 
 // claudeResponse is the Messages API response body.
@@ -69,10 +72,11 @@ type claudeResponse struct {
 // Chat sends a conversation to Claude and returns the assistant's text response.
 func (c *ClaudeClient) Chat(ctx context.Context, systemPrompt string, messages []Message) (string, error) {
 	reqBody := claudeRequest{
-		Model:     c.Model,
-		MaxTokens: c.MaxTokens,
-		System:    systemPrompt,
-		Messages:  messages,
+		Model:       c.Model,
+		MaxTokens:   c.MaxTokens,
+		Temperature: c.Temperature,
+		System:      systemPrompt,
+		Messages:    messages,
 	}
 
 	bodyJSON, err := json.Marshal(reqBody)
@@ -109,9 +113,10 @@ func (c *ClaudeClient) Chat(ctx context.Context, systemPrompt string, messages [
 		return "", fmt.Errorf("parse response: %w", err)
 	}
 
-	if len(claudeResp.Content) == 0 {
-		return "", fmt.Errorf("empty response from claude")
+	for _, block := range claudeResp.Content {
+		if block.Type == "text" {
+			return block.Text, nil
+		}
 	}
-
-	return claudeResp.Content[0].Text, nil
+	return "", fmt.Errorf("claude response contained no text block")
 }

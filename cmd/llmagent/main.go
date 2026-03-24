@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -242,6 +243,7 @@ func handleSendMessage(ctx context.Context, w http.ResponseWriter, req jsonRPCRe
 					ts.Status = "failed"
 					ts.Error = err.Error()
 					ts.mu.Unlock()
+					cleanupTask(ts.ID, ts.ContextID, executor)
 
 					writeRPCResult(w, req.ID, a2aTask{
 						ID:        ts.ID,
@@ -261,6 +263,7 @@ func handleSendMessage(ctx context.Context, w http.ResponseWriter, req jsonRPCRe
 				ts.Status = "completed"
 				ts.Result = response
 				ts.mu.Unlock()
+				cleanupTask(ts.ID, ts.ContextID, executor)
 
 				writeRPCResult(w, req.ID, a2aTask{
 					ID:        ts.ID,
@@ -295,6 +298,7 @@ func handleSendMessage(ctx context.Context, w http.ResponseWriter, req jsonRPCRe
 		ts.Status = "failed"
 		ts.Error = err.Error()
 		ts.mu.Unlock()
+		cleanupTask(taskID, contextID, executor)
 
 		writeRPCResult(w, req.ID, a2aTask{
 			ID:        taskID,
@@ -339,6 +343,7 @@ func handleSendMessage(ctx context.Context, w http.ResponseWriter, req jsonRPCRe
 	ts.Status = "completed"
 	ts.Result = response
 	ts.mu.Unlock()
+	cleanupTask(taskID, contextID, executor)
 
 	writeRPCResult(w, req.ID, a2aTask{
 		ID:        taskID,
@@ -421,6 +426,7 @@ func handleCancelTask(w http.ResponseWriter, req jsonRPCRequest) {
 	ts.mu.Lock()
 	ts.Status = "canceled"
 	ts.mu.Unlock()
+	cleanupTask(ts.ID, ts.ContextID, executor)
 
 	writeRPCResult(w, req.ID, a2aTask{
 		ID:        ts.ID,
@@ -444,5 +450,14 @@ func writeRPCError(w http.ResponseWriter, id string, code int, message string) {
 		JSONRPC: "2.0",
 		ID:      id,
 		Error:   &rpcError{Code: code, Message: message},
+	})
+}
+
+// cleanupTask schedules removal of a completed/failed/canceled task and its
+// conversation history after a grace period, preventing unbounded map growth.
+func cleanupTask(taskID string, contextID string, ex *LLMExecutor) {
+	time.AfterFunc(5*time.Minute, func() {
+		tasks.Delete(taskID)
+		ex.CleanupContext(contextID)
 	})
 }
