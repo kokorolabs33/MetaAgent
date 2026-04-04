@@ -67,7 +67,7 @@ func main() {
 	eventStore := &events.Store{DB: pool}
 	broker := events.NewBroker()
 	auditLogger := &audit.Logger{DB: pool}
-	orch := &orchestrator.Orchestrator{APIKey: cfg.AnthropicAPIKey}
+	orch := &orchestrator.Orchestrator{}
 	a2aClient := a2a.NewClient()
 	policyEngine := policy.NewEngine(pool)
 

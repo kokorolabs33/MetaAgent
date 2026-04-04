@@ -5,17 +5,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os/exec"
 	"strings"
-
-	"github.com/anthropics/anthropic-sdk-go"
-	"github.com/anthropics/anthropic-sdk-go/option"
 
 	"taskhub/internal/models"
 )
 
 // Orchestrator decomposes tasks into subtask DAGs using an LLM.
 type Orchestrator struct {
-	APIKey string
+	// Future: use Anthropic Go SDK. MVP: use claude CLI.
 }
 
 const planPrompt = `You are a task decomposition engine. Given a task and available agents, break the task into subtasks.
@@ -68,7 +66,7 @@ func (o *Orchestrator) Plan(ctx context.Context, task models.Task, agents []mode
 		userMsg += "\n" + templateSkeleton
 	}
 
-	response, err := callLLM(ctx, o.APIKey, systemPrompt, userMsg)
+	response, err := callLLM(ctx, systemPrompt, userMsg)
 	if err != nil {
 		return nil, fmt.Errorf("plan llm call: %w", err)
 	}
@@ -102,7 +100,7 @@ func (o *Orchestrator) Replan(ctx context.Context, task models.Task, failed mode
 	agentDesc := buildAgentDescription(agents)
 	systemPrompt := fmt.Sprintf("You are a task replanning engine. Available agents:\n%s\nRespond with ONLY valid JSON.", agentDesc)
 
-	response, err := callLLM(ctx, o.APIKey, systemPrompt, userMsg)
+	response, err := callLLM(ctx, systemPrompt, userMsg)
 	if err != nil {
 		return nil, fmt.Errorf("replan llm call: %w", err)
 	}
@@ -133,37 +131,18 @@ func buildAgentDescription(agents []models.Agent) string {
 	return sb.String()
 }
 
-// callLLM calls the Anthropic Messages API via the official Go SDK.
-func callLLM(ctx context.Context, apiKey, systemPrompt, userMsg string) (string, error) {
-	if apiKey == "" {
-		return "", fmt.Errorf("ANTHROPIC_API_KEY is not set — task execution requires an Anthropic API key")
-	}
-
-	client := anthropic.NewClient(option.WithAPIKey(apiKey))
-
-	message, err := client.Messages.New(ctx, anthropic.MessageNewParams{
-		Model:     anthropic.ModelClaudeSonnet4_5,
-		MaxTokens: 4096,
-		System: []anthropic.TextBlockParam{
-			{Text: systemPrompt},
-		},
-		Messages: []anthropic.MessageParam{
-			anthropic.NewUserMessage(anthropic.NewTextBlock(userMsg)),
-		},
-	})
+// callLLM uses the claude CLI for MVP. Replace with Anthropic Go SDK later.
+func callLLM(ctx context.Context, systemPrompt, userMsg string) (string, error) {
+	cmd := exec.CommandContext(ctx, "claude", "--print", "--system-prompt", systemPrompt, "--output-format", "text", userMsg)
+	out, err := cmd.Output()
 	if err != nil {
-		return "", fmt.Errorf("anthropic api: %w", err)
-	}
-
-	// Extract text content from response.
-	var result string
-	for _, block := range message.Content {
-		if block.Type == "text" {
-			result += block.Text
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			return "", fmt.Errorf("claude cli exited %d: %s", exitErr.ExitCode(), string(exitErr.Stderr))
 		}
+		return "", fmt.Errorf("claude cli: %w", err)
 	}
 
-	result = stripMarkdownFences(strings.TrimSpace(result))
+	result := stripMarkdownFences(strings.TrimSpace(string(out)))
 	return result, nil
 }
 
@@ -206,7 +185,7 @@ func (o *Orchestrator) DetectIntent(ctx context.Context, history []ChatMessage, 
 	}
 	sb.WriteString("\n[user] " + userMessage)
 
-	response, err := callLLM(ctx, o.APIKey, systemPrompt, sb.String())
+	response, err := callLLM(ctx, systemPrompt, sb.String())
 	if err != nil {
 		return nil, fmt.Errorf("detect intent llm call: %w", err)
 	}
