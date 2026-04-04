@@ -6,19 +6,21 @@ import (
 )
 
 type Task struct {
-	ID          string          `json:"id"`
-	OrgID       string          `json:"org_id"`
-	Title       string          `json:"title"`
-	Description string          `json:"description"`
-	Status      string          `json:"status"` // pending, planning, running, completed, failed, canceled
-	CreatedBy   string          `json:"created_by"`
-	Metadata    json.RawMessage `json:"metadata,omitempty"`
-	Plan        json.RawMessage `json:"plan,omitempty"`
-	Result      json.RawMessage `json:"result,omitempty"`
-	Error       string          `json:"error,omitempty"`
-	ReplanCount int             `json:"replan_count"`
-	CreatedAt   time.Time       `json:"created_at"`
-	CompletedAt *time.Time      `json:"completed_at,omitempty"`
+	ID              string          `json:"id"`
+	ConversationID  string          `json:"conversation_id,omitempty"`
+	Title           string          `json:"title"`
+	Description     string          `json:"description"`
+	Status          string          `json:"status"` // pending, planning, running, completed, failed, canceled
+	CreatedBy       string          `json:"created_by"`
+	Metadata        json.RawMessage `json:"metadata,omitempty"`
+	Plan            json.RawMessage `json:"plan,omitempty"`
+	Result          json.RawMessage `json:"result,omitempty"`
+	Error           string          `json:"error,omitempty"`
+	TemplateID      string          `json:"template_id,omitempty"`
+	TemplateVersion int             `json:"template_version,omitempty"`
+	ReplanCount     int             `json:"replan_count"`
+	CreatedAt       time.Time       `json:"created_at"`
+	CompletedAt     *time.Time      `json:"completed_at,omitempty"`
 }
 
 type SubTask struct {

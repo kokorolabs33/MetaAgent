@@ -1,13 +1,21 @@
 import type {
-  Organization,
-  OrgListItem,
-  OrgMemberWithUser,
   Agent,
+  AgentHealthOverview,
+  AgentHealthDetail,
+  Conversation,
+  ConversationListItem,
+  DashboardData,
   DiscoveredAgent,
+  PaginatedAuditLogs,
   Task,
   TaskWithSubtasks,
   SubTask,
   Message,
+  TimelineEvent,
+  User,
+  WorkflowTemplate,
+  Policy,
+  WebhookConfig,
 } from "./types";
 
 const BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8080";
@@ -50,76 +58,141 @@ async function del(path: string): Promise<void> {
 
 export const api = {
   auth: {
+    login: (email: string, name?: string) =>
+      post<{ status: string; user_id: string }>("/api/auth/login", { email, name }),
+    me: () => get<User>("/api/auth/me"),
     logout: () => post<void>("/api/auth/logout", {}),
   },
-  orgs: {
-    list: () => get<OrgListItem[]>("/api/orgs"),
-    create: (data: { name: string; slug: string }) =>
-      post<Organization>("/api/orgs", data),
-    get: (orgId: string) => get<Organization>(`/api/orgs/${orgId}`),
-    update: (orgId: string, data: Partial<Organization>) =>
-      put<Organization>(`/api/orgs/${orgId}`, data),
-  },
-  members: {
-    list: (orgId: string) =>
-      get<OrgMemberWithUser[]>(`/api/orgs/${orgId}/members`),
-    invite: (orgId: string, data: { email: string; role: string }) =>
-      post<{ status: string }>(`/api/orgs/${orgId}/members`, data),
-    updateRole: (orgId: string, uid: string, data: { role: string }) =>
-      put<{ status: string }>(`/api/orgs/${orgId}/members/${uid}`, data),
-    remove: (orgId: string, uid: string) =>
-      del(`/api/orgs/${orgId}/members/${uid}`),
-  },
   agents: {
-    list: (orgId: string) =>
-      get<Agent[]>(`/api/orgs/${orgId}/agents`),
-    get: (orgId: string, id: string) =>
-      get<Agent>(`/api/orgs/${orgId}/agents/${id}`),
-    create: (orgId: string, data: Partial<Agent>) =>
-      post<Agent>(`/api/orgs/${orgId}/agents`, data),
-    update: (orgId: string, id: string, data: Partial<Agent>) =>
-      put<Agent>(`/api/orgs/${orgId}/agents/${id}`, data),
-    delete: (orgId: string, id: string) =>
-      del(`/api/orgs/${orgId}/agents/${id}`),
-    healthcheck: (orgId: string, id: string) =>
-      post<{ status: number; latency_ms: number }>(
-        `/api/orgs/${orgId}/agents/${id}/healthcheck`,
-        {},
-      ),
-    testEndpoint: (orgId: string, endpoint: string) =>
-      post<{ status: number; latency_ms: number }>(
-        `/api/orgs/${orgId}/agents/test-endpoint`,
-        { endpoint },
-      ),
-    discover: (orgId: string, url: string) =>
-      post<DiscoveredAgent>(`/api/orgs/${orgId}/agents/discover`, { url }),
+    list: (q?: string) => {
+      const qs = q ? `?q=${encodeURIComponent(q)}` : "";
+      return get<Agent[]>(`/api/agents${qs}`);
+    },
+    get: (id: string) => get<Agent>(`/api/agents/${id}`),
+    create: (data: Partial<Agent>) => post<Agent>("/api/agents", data),
+    update: (id: string, data: Partial<Agent>) => put<Agent>(`/api/agents/${id}`, data),
+    delete: (id: string) => del(`/api/agents/${id}`),
+    healthcheck: (id: string) => post<{ status: number; latency_ms: number }>(`/api/agents/${id}/healthcheck`, {}),
+    testEndpoint: (endpoint: string) => post<{ status: number; latency_ms: number }>("/api/agents/test-endpoint", { endpoint }),
+    discover: (url: string) => post<DiscoveredAgent>("/api/agents/discover", { url }),
+    healthOverview: () => get<AgentHealthOverview[]>("/api/agents/health/overview"),
+    health: (id: string) => get<AgentHealthDetail>(`/api/agents/${id}/health`),
   },
   tasks: {
-    list: (orgId: string, status?: string) => {
-      const params = status ? `?status=${status}` : "";
-      return get<Task[]>(`/api/orgs/${orgId}/tasks${params}`);
+    list: (params?: { status?: string; q?: string; page?: number; per_page?: number }) => {
+      const searchParams = new URLSearchParams();
+      if (params?.status) searchParams.set("status", params.status);
+      if (params?.q) searchParams.set("q", params.q);
+      if (params?.page) searchParams.set("page", params.page.toString());
+      if (params?.per_page) searchParams.set("per_page", params.per_page.toString());
+      const qs = searchParams.toString();
+      return get<PaginatedTasks>(`/api/tasks${qs ? `?${qs}` : ""}`);
     },
-    get: (orgId: string, id: string) =>
-      get<TaskWithSubtasks>(`/api/orgs/${orgId}/tasks/${id}`),
-    create: (orgId: string, data: { title: string; description: string }) =>
-      post<Task>(`/api/orgs/${orgId}/tasks`, data),
-    cancel: (orgId: string, id: string) =>
-      post<void>(`/api/orgs/${orgId}/tasks/${id}/cancel`, {}),
-    cost: (orgId: string, id: string) =>
-      get<{
-        total_cost_usd: number;
-        total_input_tokens: number;
-        total_output_tokens: number;
-      }>(`/api/orgs/${orgId}/tasks/${id}/cost`),
-    subtasks: (orgId: string, id: string) =>
-      get<SubTask[]>(`/api/orgs/${orgId}/tasks/${id}/subtasks`),
+    get: (id: string) => get<TaskWithSubtasks>(`/api/tasks/${id}`),
+    create: (data: { title: string; description: string; template_id?: string }) => post<Task>("/api/tasks", data),
+    cancel: (id: string) => post<void>(`/api/tasks/${id}/cancel`, {}),
+    cost: (id: string) => get<{ total_cost_usd: number; total_input_tokens: number; total_output_tokens: number }>(`/api/tasks/${id}/cost`),
+    subtasks: (id: string) => get<SubTask[]>(`/api/tasks/${id}/subtasks`),
+    approve: (id: string, action: "approve" | "reject") =>
+      post<{ status: string }>(`/api/tasks/${id}/approve`, { action }),
+    timeline: (id: string) => get<TimelineEvent[]>(`/api/tasks/${id}/timeline`),
   },
   messages: {
-    list: (orgId: string, taskId: string) =>
-      get<Message[]>(`/api/orgs/${orgId}/tasks/${taskId}/messages`),
-    send: (orgId: string, taskId: string, content: string) =>
-      post<Message>(`/api/orgs/${orgId}/tasks/${taskId}/messages`, {
-        content,
-      }),
+    list: (taskId: string) => get<Message[]>(`/api/tasks/${taskId}/messages`),
+    send: (taskId: string, content: string) => post<Message>(`/api/tasks/${taskId}/messages`, { content }),
+  },
+  templates: {
+    list: () => get<WorkflowTemplate[]>("/api/templates"),
+    get: (id: string) => get<WorkflowTemplate>(`/api/templates/${id}`),
+    create: (data: { name: string; description: string; steps: Record<string, unknown>[]; variables?: Record<string, unknown>[] }) =>
+      post<WorkflowTemplate>("/api/templates", data),
+    update: (id: string, data: Partial<WorkflowTemplate>) =>
+      put<WorkflowTemplate>(`/api/templates/${id}`, data),
+    delete: (id: string) => del(`/api/templates/${id}`),
+    createFromTask: (taskId: string, data: { name: string; description?: string }) =>
+      post<WorkflowTemplate>(`/api/templates/from-task/${taskId}`, data),
+    rollback: (id: string, version: number) =>
+      post<WorkflowTemplate>(`/api/templates/${id}/rollback/${version}`, {}),
+    analyze: (id: string) =>
+      post<TemplateAnalysis>(`/api/templates/${id}/analyze`, {}),
+  },
+  policies: {
+    list: () => get<Policy[]>("/api/policies"),
+    create: (data: { name: string; rules: Record<string, unknown>; priority?: number }) =>
+      post<Policy>("/api/policies", data),
+    update: (id: string, data: Partial<Policy>) =>
+      put<Policy>(`/api/policies/${id}`, data),
+    delete: (id: string) => del(`/api/policies/${id}`),
+  },
+  analytics: {
+    dashboard: () => get<DashboardData>("/api/analytics/dashboard"),
+  },
+  auditLogs: {
+    list: (params?: { task_id?: string; agent_id?: string; type?: string; page?: number; per_page?: number }) => {
+      const searchParams = new URLSearchParams();
+      if (params?.task_id) searchParams.set("task_id", params.task_id);
+      if (params?.agent_id) searchParams.set("agent_id", params.agent_id);
+      if (params?.type) searchParams.set("type", params.type);
+      if (params?.page) searchParams.set("page", params.page.toString());
+      if (params?.per_page) searchParams.set("per_page", params.per_page.toString());
+      const qs = searchParams.toString();
+      return get<PaginatedAuditLogs>(`/api/audit-logs${qs ? `?${qs}` : ""}`);
+    },
+  },
+  webhooks: {
+    list: () => get<WebhookConfig[]>("/api/webhooks"),
+    create: (data: { name: string; url: string; events: string[]; secret?: string }) =>
+      post<WebhookConfig>("/api/webhooks", data),
+    update: (id: string, data: Partial<WebhookConfig>) =>
+      put<WebhookConfig>(`/api/webhooks/${id}`, data),
+    delete: (id: string) => del(`/api/webhooks/${id}`),
+    test: (id: string) =>
+      post<{ success: boolean; status_code?: number; error?: string }>(`/api/webhooks/${id}/test`, {}),
+  },
+  conversations: {
+    list: () => get<ConversationListItem[]>("/api/conversations"),
+    create: (data?: { title?: string }) => post<Conversation>("/api/conversations", data ?? {}),
+    get: (id: string) => get<Conversation>(`/api/conversations/${id}`),
+    update: (id: string, data: { title: string }) => put<Conversation>(`/api/conversations/${id}`, data),
+    delete: (id: string) => del(`/api/conversations/${id}`),
+    messages: (id: string) => get<Message[]>(`/api/conversations/${id}/messages`),
+    sendMessage: (id: string, content: string) => post<Message>(`/api/conversations/${id}/messages`, { content }),
+    tasks: (id: string) => get<Task[]>(`/api/conversations/${id}/tasks`),
+  },
+  a2aConfig: {
+    get: () => get<A2AConfig>("/api/a2a-config"),
+    update: (data: { enabled?: boolean; name_override?: string; description_override?: string }) =>
+      put<A2AConfig>("/api/a2a-config", data),
+    refreshCard: () => post<Record<string, unknown>>("/api/a2a-config/refresh-card", {}),
   },
 };
+
+export interface TemplateAnalysis {
+  template_id: string;
+  execution_count: number;
+  success_rate: number;
+  avg_duration_seconds: number;
+  avg_hitl_interventions: number;
+  proposals: EvolutionProposal[];
+}
+
+export interface EvolutionProposal {
+  type: string;
+  description: string;
+  reason: string;
+}
+
+export interface A2AConfig {
+  enabled: boolean;
+  name_override: string | null;
+  description_override: string | null;
+  aggregated_card: Record<string, unknown>;
+}
+
+export interface PaginatedTasks {
+  items: Task[];
+  total: number;
+  page: number;
+  per_page: number;
+  pages: number;
+}

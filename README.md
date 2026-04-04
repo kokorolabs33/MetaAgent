@@ -132,8 +132,8 @@ make dev-backend
 # Terminal 2: Frontend
 make dev-frontend
 
-# Terminal 3: Mock agent (for testing)
-go run ./cmd/mockagent
+# Terminal 3: OpenAI agents (requires OPENAI_API_KEY)
+make agents
 ```
 
 Open **http://localhost:3000** — no login required in local mode.
@@ -210,7 +210,7 @@ TaskHub adapts to your API — your agent doesn't need to change anything.
 taskhub/
 ├── cmd/
 │   ├── server/         # API server
-│   └── mockagent/      # Mock agent for testing
+│   └── openaiagent/    # OpenAI-powered A2A agents
 ├── internal/
 │   ├── adapter/        # Agent adapters (HTTP poll, native protocol)
 │   ├── audit/          # Audit logging + cost tracking

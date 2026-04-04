@@ -34,7 +34,7 @@ export function AgentCard({ agent }: AgentCardProps) {
   return (
     <Card
       className="cursor-pointer transition-colors hover:bg-card/80"
-      onClick={() => router.push(`/agents/${agent.id}`)}
+      onClick={() => router.push(`/manage/agents/${agent.id}`)}
     >
       <CardHeader>
         <div className="flex items-center justify-between">
@@ -58,7 +58,7 @@ export function AgentCard({ agent }: AgentCardProps) {
           )}
           <div className="flex items-center justify-between gap-2">
             <div className="flex flex-wrap gap-1">
-              {agent.capabilities.slice(0, 4).map((cap) => (
+              {(agent.capabilities ?? []).slice(0, 4).map((cap) => (
                 <span
                   key={cap}
                   className="rounded-md bg-secondary/60 px-1.5 py-0.5 text-[10px] text-muted-foreground"
@@ -66,9 +66,9 @@ export function AgentCard({ agent }: AgentCardProps) {
                   {cap}
                 </span>
               ))}
-              {agent.capabilities.length > 4 && (
+              {(agent.capabilities ?? []).length > 4 && (
                 <span className="rounded-md bg-secondary/60 px-1.5 py-0.5 text-[10px] text-muted-foreground">
-                  +{agent.capabilities.length - 4}
+                  +{(agent.capabilities ?? []).length - 4}
                 </span>
               )}
             </div>

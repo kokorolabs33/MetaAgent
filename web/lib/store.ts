@@ -3,8 +3,6 @@
 import { create } from "zustand";
 import { api } from "./api";
 import type {
-  Organization,
-  OrgListItem,
   Agent,
   Task,
   TaskWithSubtasks,
@@ -14,72 +12,37 @@ import type {
 } from "./types";
 import { connectSSE } from "./sse";
 
-// ─── Org Store ──────────────────────────────────────────────
-interface OrgStore {
-  orgs: OrgListItem[];
-  currentOrg: Organization | null;
-  isLoading: boolean;
-  loadOrgs: () => Promise<void>;
-  selectOrg: (orgId: string) => Promise<void>;
-}
-
-export const useOrgStore = create<OrgStore>((set) => ({
-  orgs: [],
-  currentOrg: null,
-  isLoading: false,
-
-  loadOrgs: async () => {
-    set({ isLoading: true });
-    try {
-      const orgs = await api.orgs.list();
-      set({ orgs, isLoading: false });
-    } catch {
-      set({ isLoading: false });
-    }
-  },
-
-  selectOrg: async (orgId) => {
-    set({ isLoading: true });
-    try {
-      const org = await api.orgs.get(orgId);
-      set({ currentOrg: org, isLoading: false });
-    } catch {
-      set({ isLoading: false });
-    }
-  },
-}));
-
 // ─── Agent Store ────────────────────────────────────────────
 interface AgentStore {
   agents: Agent[];
   isLoading: boolean;
-  loadAgents: (orgId: string) => Promise<void>;
-  registerAgent: (orgId: string, data: Partial<Agent>) => Promise<Agent>;
-  deleteAgent: (orgId: string, id: string) => Promise<void>;
+  loadAgents: (q?: string) => Promise<void>;
+  registerAgent: (data: Partial<Agent>) => Promise<Agent>;
+  deleteAgent: (id: string) => Promise<void>;
 }
 
 export const useAgentStore = create<AgentStore>((set) => ({
   agents: [],
   isLoading: false,
 
-  loadAgents: async (orgId) => {
+  loadAgents: async (q?: string) => {
     set({ isLoading: true });
     try {
-      const agents = await api.agents.list(orgId);
+      const agents = await api.agents.list(q);
       set({ agents, isLoading: false });
     } catch {
       set({ isLoading: false });
     }
   },
 
-  registerAgent: async (orgId, data) => {
-    const agent = await api.agents.create(orgId, data);
+  registerAgent: async (data) => {
+    const agent = await api.agents.create(data);
     set((s) => ({ agents: [...s.agents, agent] }));
     return agent;
   },
 
-  deleteAgent: async (orgId, id) => {
-    await api.agents.delete(orgId, id);
+  deleteAgent: async (id) => {
+    await api.agents.delete(id);
     set((s) => ({ agents: s.agents.filter((a) => a.id !== id) }));
   },
 }));
@@ -87,58 +50,64 @@ export const useAgentStore = create<AgentStore>((set) => ({
 // ─── Task Store ─────────────────────────────────────────────
 interface TaskStore {
   tasks: Task[];
+  totalTasks: number;
+  currentPage: number;
+  totalPages: number;
   currentTask: TaskWithSubtasks | null;
   messages: Message[];
   isLoading: boolean;
   sseDisconnect: (() => void) | null;
 
-  loadTasks: (orgId: string, status?: string) => Promise<void>;
-  createTask: (
-    orgId: string,
-    title: string,
-    description: string,
-  ) => Promise<Task>;
-  selectTask: (orgId: string, taskId: string) => Promise<void>;
-  cancelTask: (orgId: string, taskId: string) => Promise<void>;
-  sendMessage: (
-    orgId: string,
-    taskId: string,
-    content: string,
-  ) => Promise<void>;
-  connectSSE: (orgId: string, taskId: string) => void;
+  loadTasks: (params?: { status?: string; q?: string; page?: number }) => Promise<void>;
+  createTask: (title: string, description: string, templateId?: string) => Promise<Task>;
+  selectTask: (taskId: string) => Promise<void>;
+  cancelTask: (taskId: string) => Promise<void>;
+  sendMessage: (taskId: string, content: string) => Promise<void>;
+  connectSSE: (taskId: string) => void;
   disconnectSSE: () => void;
   handleEvent: (event: TaskEvent) => void;
 }
 
 export const useTaskStore = create<TaskStore>((set, get) => ({
   tasks: [],
+  totalTasks: 0,
+  currentPage: 1,
+  totalPages: 0,
   currentTask: null,
   messages: [],
   isLoading: false,
   sseDisconnect: null,
 
-  loadTasks: async (orgId, status) => {
+  loadTasks: async (params) => {
     set({ isLoading: true });
     try {
-      const tasks = await api.tasks.list(orgId, status);
-      set({ tasks, isLoading: false });
+      const result = await api.tasks.list(params);
+      set({
+        tasks: result.items,
+        totalTasks: result.total,
+        currentPage: result.page,
+        totalPages: result.pages,
+        isLoading: false,
+      });
     } catch {
       set({ isLoading: false });
     }
   },
 
-  createTask: async (orgId, title, description) => {
-    const task = await api.tasks.create(orgId, { title, description });
+  createTask: async (title, description, templateId?) => {
+    const data: { title: string; description: string; template_id?: string } = { title, description };
+    if (templateId) data.template_id = templateId;
+    const task = await api.tasks.create(data);
     set((s) => ({ tasks: [task, ...s.tasks] }));
     return task;
   },
 
-  selectTask: async (orgId, taskId) => {
+  selectTask: async (taskId) => {
     set({ isLoading: true });
     try {
       const [task, messages] = await Promise.all([
-        api.tasks.get(orgId, taskId),
-        api.messages.list(orgId, taskId),
+        api.tasks.get(taskId),
+        api.messages.list(taskId),
       ]);
       set({ currentTask: task, messages, isLoading: false });
     } catch {
@@ -146,16 +115,16 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
     }
   },
 
-  cancelTask: async (orgId, taskId) => {
-    await api.tasks.cancel(orgId, taskId);
+  cancelTask: async (taskId) => {
+    await api.tasks.cancel(taskId);
     const task = get().currentTask;
     if (task && task.id === taskId) {
       set({ currentTask: { ...task, status: "cancelled" } });
     }
   },
 
-  sendMessage: async (orgId, taskId, content) => {
-    const msg = await api.messages.send(orgId, taskId, content);
+  sendMessage: async (taskId, content) => {
+    const msg = await api.messages.send(taskId, content);
     // Optimistically add — SSE dedup will skip if it arrives again
     set((s) => {
       if (s.messages.some((m) => m.id === msg.id)) return s;
@@ -163,9 +132,9 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
     });
   },
 
-  connectSSE: (orgId, taskId) => {
+  connectSSE: (taskId) => {
     get().disconnectSSE();
-    const disconnect = connectSSE(orgId, taskId, (event) => {
+    const disconnect = connectSSE(taskId, (event) => {
       get().handleEvent(event as unknown as TaskEvent);
     });
     set({ sseDisconnect: disconnect });
@@ -191,6 +160,7 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
         "task.completed": "completed",
         "task.failed": "failed",
         "task.cancelled": "cancelled",
+        "task.approval_required": "approval_required",
       };
       const newStatus = statusMap[event.type];
       if (newStatus) {
@@ -205,7 +175,8 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
         // Handle subtask creation — add new subtask to the list
         if (event.type === "subtask.created") {
           const data = event.data as Record<string, unknown>;
-          const exists = currentTask.subtasks.some((st) => st.id === subtaskId);
+          const subtasks = currentTask.subtasks ?? [];
+          const exists = subtasks.some((st) => st.id === subtaskId);
           if (!exists) {
             const newSubtask: SubTask = {
               id: subtaskId,
@@ -221,7 +192,7 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
             set({
               currentTask: {
                 ...currentTask,
-                subtasks: [...currentTask.subtasks, newSubtask],
+                subtasks: [...subtasks, newSubtask],
               },
             });
           }
@@ -239,7 +210,7 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
         };
         const newStatus = statusMap[event.type];
         if (newStatus) {
-          const updatedSubtasks = currentTask.subtasks.map((st) =>
+          const updatedSubtasks = (currentTask.subtasks ?? []).map((st) =>
             st.id === subtaskId
               ? { ...st, status: newStatus }
               : st,
@@ -267,6 +238,7 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
           const msg: Message = {
             id: msgId,
             task_id: get().currentTask?.id ?? "",
+            conversation_id: (data.conversation_id as string) ?? "",
             // sender_type: prefer data.sender_type, fallback to event.actor_type
             sender_type: (data.sender_type as Message["sender_type"])
               ?? (event.actor_type as Message["sender_type"])
@@ -280,6 +252,19 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
           return { messages: [...s.messages, msg] };
         });
       }
+    }
+
+    // Handle approval lifecycle events
+    if (event.type === "approval.requested") {
+      set({
+        currentTask: {
+          ...currentTask,
+          status: "approval_required" as Task["status"],
+        },
+      });
+    }
+    if (event.type === "approval.resolved") {
+      void get().selectTask(currentTask.id);
     }
 
     // Update task result when task completes

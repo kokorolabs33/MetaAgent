@@ -14,7 +14,6 @@ import { useTaskStore } from "@/lib/store";
 import type { Message, SubTask } from "@/lib/types";
 
 interface GroupChatProps {
-  orgId: string;
   taskId: string;
   messages: Message[];
   agents: { id: string; name: string }[];
@@ -22,7 +21,6 @@ interface GroupChatProps {
 }
 
 export function GroupChat({
-  orgId,
   taskId,
   messages,
   agents,
@@ -81,14 +79,16 @@ export function GroupChat({
     [],
   );
 
+  const [mentionMap, setMentionMap] = useState<Map<string, { id: string; name: string }>>(new Map());
+
   const insertMention = useCallback(
-    (agentName: string) => {
+    (agent: { id: string; name: string }) => {
       const textarea = inputRef.current;
       if (!textarea) return;
 
       const cursorPos = textarea.selectionStart;
       const textBeforeCursor = input.slice(0, cursorPos);
-      const atMatch = textBeforeCursor.match(/@(\w*)$/);
+      const atMatch = textBeforeCursor.match(/@(\S*)$/);
 
       if (atMatch) {
         const beforeAt = textBeforeCursor.slice(
@@ -96,8 +96,13 @@ export function GroupChat({
           textBeforeCursor.length - atMatch[0].length,
         );
         const afterCursor = input.slice(cursorPos);
-        const newValue = `${beforeAt}@${agentName} ${afterCursor}`;
+        const newValue = `${beforeAt}@${agent.name} ${afterCursor}`;
         setInput(newValue);
+        setMentionMap((prev) => {
+          const next = new Map(prev);
+          next.set(agent.name, agent);
+          return next;
+        });
       }
 
       setShowMentions(false);
@@ -111,16 +116,25 @@ export function GroupChat({
     const trimmed = input.trim();
     if (!trimmed || isSending) return;
 
+    let content = trimmed;
+    for (const [name, agent] of mentionMap) {
+      content = content.replace(
+        new RegExp(`@${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`, "g"),
+        `<@${agent.id}|${agent.name}>`,
+      );
+    }
+
     setIsSending(true);
     try {
-      await sendMessage(orgId, taskId, trimmed);
+      await sendMessage(taskId, content);
       setInput("");
+      setMentionMap(new Map());
     } catch {
       // Error handling is managed by the store
     } finally {
       setIsSending(false);
     }
-  }, [input, isSending, sendMessage, orgId, taskId]);
+  }, [input, isSending, sendMessage, taskId, mentionMap]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -141,7 +155,7 @@ export function GroupChat({
         }
         if (e.key === "Enter" || e.key === "Tab") {
           e.preventDefault();
-          insertMention(filteredAgents[mentionIndex].name);
+          insertMention(filteredAgents[mentionIndex]);
           return;
         }
         if (e.key === "Escape") {
@@ -201,7 +215,7 @@ export function GroupChat({
                 }`}
                 onMouseDown={(e) => {
                   e.preventDefault();
-                  insertMention(agent.name);
+                  insertMention(agent);
                 }}
               >
                 <div className="flex size-5 items-center justify-center rounded-full bg-blue-600 text-[10px] font-bold text-white">

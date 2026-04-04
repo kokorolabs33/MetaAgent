@@ -3,7 +3,7 @@
 // The DAGExecutor takes an execution plan (DAG of subtasks) and runs subtasks
 // in dependency order. It uses the A2A protocol to communicate with agents,
 // handles retries, human-in-the-loop input via A2A input-required state,
-// blocked propagation, replanning, budget enforcement, and cancellation.
+// blocked propagation, replanning, and cancellation.
 package executor
 
 import (
@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"taskhub/internal/a2a"
@@ -25,22 +24,25 @@ import (
 	"taskhub/internal/events"
 	"taskhub/internal/models"
 	"taskhub/internal/orchestrator"
+	"taskhub/internal/policy"
+	"taskhub/internal/webhook"
 )
 
 // Sentinel errors.
 var (
-	ErrBudgetExceeded = errors.New("monthly budget exceeded")
-	ErrTaskCanceled   = errors.New("task was canceled")
+	ErrTaskCanceled = errors.New("task was canceled")
 )
 
 // DAGExecutor manages the lifecycle of task execution.
 type DAGExecutor struct {
-	DB           *pgxpool.Pool
-	Broker       *events.Broker
-	EventStore   *events.Store
-	Audit        *audit.Logger
-	Orchestrator *orchestrator.Orchestrator
-	A2AClient    *a2a.Client
+	DB            *pgxpool.Pool
+	Broker        *events.Broker
+	EventStore    *events.Store
+	Audit         *audit.Logger
+	Orchestrator  *orchestrator.Orchestrator
+	A2AClient     *a2a.Client
+	PolicyEngine  *policy.Engine
+	WebhookSender *webhook.Sender
 
 	cancels sync.Map // task_id → context.CancelFunc
 
@@ -74,41 +76,71 @@ func (e *DAGExecutor) Execute(ctx context.Context, task models.Task) error {
 	e.publishEvent(ctx, task.ID, "", "task.planning", "system", "", nil)
 	e.publishSystemMessage(ctx, task.ID, "Planning task: analyzing and decomposing into subtasks...")
 
-	// 2. Load org for budget checks
-	var orgBudget *float64
-	var orgAlertThreshold float64
-	err := e.DB.QueryRow(ctx,
-		`SELECT budget_usd_monthly, budget_alert_threshold FROM organizations WHERE id = $1`,
-		task.OrgID).Scan(&orgBudget, &orgAlertThreshold)
-	if err != nil {
-		return fmt.Errorf("load org: %w", err)
-	}
-
-	// 3. Check budget before LLM call
-	if err := e.checkBudget(ctx, task.OrgID, orgBudget); err != nil {
-		_ = e.updateTaskStatus(ctx, task.ID, "failed", err.Error())
-		e.publishEvent(ctx, task.ID, "", "task.failed", "system", "", map[string]any{"error": err.Error()})
-		return err
-	}
-
-	// 4. Load agents for this org
-	agents, err := e.loadOrgAgents(ctx, task.OrgID)
+	// 2. Load all active agents
+	agents, err := e.loadAgents(ctx)
 	if err != nil {
 		return fmt.Errorf("load agents: %w", err)
 	}
 	if len(agents) == 0 {
-		errMsg := "no agents available for this organization"
+		errMsg := "no active agents available"
 		_ = e.updateTaskStatus(ctx, task.ID, "failed", errMsg)
 		e.publishEvent(ctx, task.ID, "", "task.failed", "system", "", map[string]any{"error": errMsg})
 		return errors.New(errMsg)
 	}
 
+	// 4. Evaluate policies
+	var policyConstraints string
+	var appliedPolicies []string
+	var policyResult *policy.EvalResult
+	if e.PolicyEngine != nil {
+		evalResult, evalErr := e.PolicyEngine.Evaluate(ctx, task.Title, task.Description)
+		if evalErr != nil {
+			log.Printf("executor: policy evaluation failed: %v", evalErr)
+			// Non-fatal — proceed without policy constraints
+		} else {
+			policyResult = evalResult
+			policyConstraints = evalResult.FormatForPrompt()
+			appliedPolicies = evalResult.AppliedPolicies
+		}
+	}
+
+	// Publish policy.applied event for observability
+	if len(appliedPolicies) > 0 {
+		e.publishEvent(ctx, task.ID, "", "policy.applied", "system", "", map[string]any{
+			"policies": appliedPolicies,
+		})
+	}
+
+	// 4b. Load template skeleton if task references a template
+	var templateSkeleton string
+	if task.TemplateID != "" {
+		var stepsJSON []byte
+		var tmplVersion int
+		tmplErr := e.DB.QueryRow(ctx,
+			`SELECT version, steps FROM workflow_templates WHERE id = $1 AND is_active = true`,
+			task.TemplateID).Scan(&tmplVersion, &stepsJSON)
+		if tmplErr == nil {
+			templateSkeleton = fmt.Sprintf("\n[Template Skeleton (v%d)]\nUse this as a guide. You may adjust instructions and add auxiliary steps, but keep mandatory steps:\n%s", tmplVersion, string(stepsJSON))
+			// Update task with template version used
+			_, _ = e.DB.Exec(ctx, `UPDATE tasks SET template_version = $1 WHERE id = $2`, tmplVersion, task.ID)
+
+			// Publish template.matched event for observability
+			e.publishEvent(ctx, task.ID, "", "template.matched", "system", "", map[string]any{
+				"template_id": task.TemplateID,
+				"version":     tmplVersion,
+			})
+		} else {
+			log.Printf("executor: template %s not found or inactive: %v", task.TemplateID, tmplErr)
+		}
+	}
+
 	// 5. Call orchestrator to create plan
-	plan, err := e.Orchestrator.Plan(ctx, task, agents)
+	plan, err := e.Orchestrator.Plan(ctx, task, agents, policyConstraints, templateSkeleton)
 	if err != nil {
 		errMsg := fmt.Sprintf("planning failed: %v", err)
 		_ = e.updateTaskStatus(ctx, task.ID, "failed", errMsg)
 		e.publishEvent(ctx, task.ID, "", "task.failed", "system", "", map[string]any{"error": errMsg})
+		e.recordTemplateExecution(ctx, task.ID, task.TemplateID, task.TemplateVersion, "failed")
 		return fmt.Errorf("orchestrator plan: %w", err)
 	}
 
@@ -117,6 +149,35 @@ func (e *DAGExecutor) Execute(ctx context.Context, task models.Task) error {
 	if err != nil {
 		return fmt.Errorf("marshal plan: %w", err)
 	}
+
+	// Check if subtask count requires approval before proceeding
+	if policyResult != nil && policyResult.RequireApprovalAboveSubtasks > 0 && len(plan.SubTasks) > policyResult.RequireApprovalAboveSubtasks {
+		_, err = e.DB.Exec(ctx,
+			`UPDATE tasks SET plan = $1, status = 'approval_required' WHERE id = $2`,
+			planJSON, task.ID)
+		if err != nil {
+			return fmt.Errorf("store plan for approval: %w", err)
+		}
+
+		// Store applied policies
+		if len(appliedPolicies) > 0 {
+			policyJSON, marshalErr := json.Marshal(appliedPolicies)
+			if marshalErr == nil {
+				_, _ = e.DB.Exec(ctx, `UPDATE tasks SET policy_applied = $1 WHERE id = $2`, policyJSON, task.ID)
+			}
+		}
+
+		e.publishEvent(ctx, task.ID, "", "approval.requested", "system", "", map[string]any{
+			"subtask_count": len(plan.SubTasks),
+			"threshold":     policyResult.RequireApprovalAboveSubtasks,
+		})
+		e.publishSystemMessage(ctx, task.ID,
+			fmt.Sprintf("Plan has %d subtasks (threshold: %d). Awaiting approval.", len(plan.SubTasks), policyResult.RequireApprovalAboveSubtasks))
+
+		// Don't proceed with execution — wait for approval via the approve endpoint
+		return nil
+	}
+
 	_, err = e.DB.Exec(ctx,
 		`UPDATE tasks SET plan = $1, status = 'running' WHERE id = $2`,
 		planJSON, task.ID)
@@ -126,7 +187,21 @@ func (e *DAGExecutor) Execute(ctx context.Context, task models.Task) error {
 	e.publishEvent(ctx, task.ID, "", "task.planned", "system", "", map[string]any{"summary": plan.Summary})
 	e.publishSystemMessage(ctx, task.ID, fmt.Sprintf("Plan ready: %s (%d subtasks)", plan.Summary, len(plan.SubTasks)))
 
-	// 7. Create subtask records from plan
+	// Store applied policies on the task
+	if len(appliedPolicies) > 0 {
+		policyJSON, marshalErr := json.Marshal(appliedPolicies)
+		if marshalErr == nil {
+			_, _ = e.DB.Exec(ctx, `UPDATE tasks SET policy_applied = $1 WHERE id = $2`, policyJSON, task.ID)
+		}
+	}
+
+	// 7–8. Create subtask records and run DAG loop
+	return e.executePlan(ctx, task, plan, agents)
+}
+
+// executePlan creates subtask records from a plan and runs the DAG loop.
+// Shared by Execute (normal flow) and ResumeApproved (after approval).
+func (e *DAGExecutor) executePlan(ctx context.Context, task models.Task, plan *models.ExecutionPlan, agents []models.Agent) error {
 	subtasks, err := e.createSubtasks(ctx, task.ID, plan, agents)
 	if err != nil {
 		return fmt.Errorf("create subtasks: %w", err)
@@ -143,8 +218,42 @@ func (e *DAGExecutor) Execute(ctx context.Context, task models.Task) error {
 
 	e.publishEvent(ctx, task.ID, "", "task.running", "system", "", nil)
 
-	// 8. Run DAG loop
 	return e.runDAGLoop(ctx, task, subtasks, agents)
+}
+
+// ResumeApproved resumes a task that was approved after approval_required state.
+// It loads the stored plan from the database and proceeds with subtask creation and DAG execution.
+func (e *DAGExecutor) ResumeApproved(ctx context.Context, taskID string) error {
+	// Load the task (includes the stored plan JSON)
+	task, err := e.loadTask(ctx, taskID)
+	if err != nil {
+		return fmt.Errorf("load task: %w", err)
+	}
+
+	if task.Plan == nil || len(task.Plan) == 0 {
+		return fmt.Errorf("task %s has no stored plan", taskID)
+	}
+
+	var plan models.ExecutionPlan
+	if err := json.Unmarshal(task.Plan, &plan); err != nil {
+		return fmt.Errorf("parse stored plan: %w", err)
+	}
+
+	// Update status to running
+	if err := e.updateTaskStatus(ctx, taskID, "running", ""); err != nil {
+		return fmt.Errorf("update task to running: %w", err)
+	}
+
+	e.publishEvent(ctx, taskID, "", "approval.resolved", "user", "", map[string]any{"action": "approved"})
+	e.publishSystemMessage(ctx, taskID, "Plan approved. Starting execution...")
+
+	// Load agents for agent ID resolution
+	agents, err := e.loadAgents(ctx)
+	if err != nil {
+		return fmt.Errorf("load agents: %w", err)
+	}
+
+	return e.executePlan(ctx, *task, &plan, agents)
 }
 
 // createSubtasks creates DB records from the execution plan.
@@ -297,6 +406,7 @@ func (e *DAGExecutor) runDAGLoop(ctx context.Context, task models.Task, subtasks
 			}
 			e.publishEvent(taskCtx, task.ID, "", "task.completed", "system", "", map[string]any{"result": taskResult})
 			e.publishSystemMessage(taskCtx, task.ID, "All subtasks completed. Task finished.")
+			e.recordTemplateExecution(taskCtx, task.ID, task.TemplateID, task.TemplateVersion, "completed")
 			wg.Wait()
 			return nil
 		}
@@ -310,6 +420,7 @@ func (e *DAGExecutor) runDAGLoop(ctx context.Context, task models.Task, subtasks
 				errMsg := fmt.Sprintf("subtask %s failed: %s", failedSubtask.ID, failedSubtask.Error)
 				_ = e.updateTaskStatus(taskCtx, task.ID, "failed", errMsg)
 				e.publishEvent(taskCtx, task.ID, "", "task.failed", "system", "", map[string]any{"error": errMsg})
+				e.recordTemplateExecution(taskCtx, task.ID, task.TemplateID, task.TemplateVersion, "failed")
 				wg.Wait()
 				return fmt.Errorf("task failed: %s", errMsg)
 			}
@@ -370,6 +481,7 @@ func (e *DAGExecutor) runDAGLoop(ctx context.Context, task models.Task, subtasks
 			// Task was canceled
 			_ = e.updateTaskStatus(ctx, task.ID, "canceled", "task canceled")
 			e.publishEvent(ctx, task.ID, "", "task.canceled", "system", "", nil)
+			e.recordTemplateExecution(ctx, task.ID, task.TemplateID, task.TemplateVersion, "canceled")
 			wg.Wait()
 			return ErrTaskCanceled
 		case <-statusChangeCh:
@@ -396,12 +508,6 @@ func (e *DAGExecutor) runSubtask(
 		default:
 		}
 	}()
-
-	// Check budget before submit
-	if err := e.checkBudgetForOrg(ctx, task.OrgID); err != nil {
-		e.failSubtask(ctx, task.ID, st.ID, err.Error(), allSubtasks)
-		return
-	}
 
 	// Build input with upstream outputs
 	inputMap := buildSubtaskInput(st, allSubtasks, agents)
@@ -432,7 +538,6 @@ func (e *DAGExecutor) runSubtask(
 
 	// Audit: agent call submitted
 	_ = e.Audit.Log(ctx, audit.Entry{
-		OrgID:        task.OrgID,
 		TaskID:       task.ID,
 		SubtaskID:    st.ID,
 		AgentID:      agent.ID,
@@ -466,6 +571,9 @@ func (e *DAGExecutor) runSubtask(
 			log.Printf("executor: store a2a_task_id for subtask %s: %v", st.ID, err)
 		}
 	}
+
+	// Poll async agents until they reach a terminal state
+	result = e.pollUntilTerminal(ctx, agent.Endpoint, result)
 
 	// Handle result state
 	e.handleA2AResult(ctx, task, st, agent, result, allSubtasks, statusChangeCh)
@@ -514,7 +622,6 @@ func (e *DAGExecutor) handleA2AResult(
 
 		// Audit: agent call completed
 		_ = e.Audit.Log(ctx, audit.Entry{
-			OrgID:        task.OrgID,
 			TaskID:       task.ID,
 			SubtaskID:    st.ID,
 			AgentID:      agent.ID,
@@ -576,10 +683,54 @@ func (e *DAGExecutor) handleA2AResult(
 		}
 
 	default:
-		// Unknown state (working, submitted, etc.) — treat as failure
+		// Unknown state — treat as failure
 		log.Printf("executor: subtask %s returned unexpected state %q", st.ID, result.State)
 		e.failSubtask(ctx, task.ID, st.ID, fmt.Sprintf("unexpected agent state: %s", result.State), allSubtasks)
 	}
+}
+
+// pollUntilTerminal polls an async A2A agent until the task reaches a terminal
+// or actionable state (completed, failed, input-required, canceled). If the
+// result is already terminal it returns immediately. The poll uses a 2-second
+// interval with a 5-minute timeout.
+func (e *DAGExecutor) pollUntilTerminal(ctx context.Context, agentURL string, result *a2a.SendResult) *a2a.SendResult {
+	if result.State != "working" && result.State != "submitted" {
+		return result
+	}
+
+	const pollInterval = 2 * time.Second
+	const pollTimeout = 5 * time.Minute
+
+	deadline := time.Now().Add(pollTimeout)
+	taskID := result.TaskID
+
+	log.Printf("executor: polling agent %s for task %s (state=%s)", agentURL, taskID, result.State)
+
+	for time.Now().Before(deadline) {
+		select {
+		case <-ctx.Done():
+			return result // canceled
+		case <-time.After(pollInterval):
+		}
+
+		pollResult, err := e.A2AClient.GetTask(ctx, agentURL, taskID)
+		if err != nil {
+			log.Printf("executor: poll task %s: %v", taskID, err)
+			continue // transient error, keep polling
+		}
+
+		result = pollResult
+		if result.State != "working" && result.State != "submitted" {
+			log.Printf("executor: task %s reached state %q", taskID, result.State)
+			return result
+		}
+	}
+
+	// Timed out — synthesize a failure result
+	log.Printf("executor: task %s timed out after %v", taskID, pollTimeout)
+	result.State = "failed"
+	result.Error = fmt.Sprintf("agent task timed out after %v", pollTimeout)
+	return result
 }
 
 // SendFollowUp sends a follow-up message to an agent for an existing subtask.
@@ -612,6 +763,9 @@ func (e *DAGExecutor) SendFollowUp(ctx context.Context, taskID, subtaskID, agent
 			log.Printf("executor: update a2a_task_id for subtask %s: %v", subtaskID, err)
 		}
 	}
+
+	// Poll async agents until they reach a terminal state
+	result = e.pollUntilTerminal(ctx, agentEndpoint, result)
 
 	// Handle the result
 	switch result.State {
@@ -775,48 +929,6 @@ func buildSubtaskInput(st models.SubTask, allSubtasks []models.SubTask, agents [
 	return input
 }
 
-// checkBudget verifies that the org hasn't exceeded its monthly budget.
-func (e *DAGExecutor) checkBudget(ctx context.Context, orgID string, budget *float64) error {
-	if budget == nil || *budget <= 0 {
-		return nil // no budget set
-	}
-
-	spent, err := e.Audit.GetOrgMonthlySpend(ctx, orgID)
-	if err != nil {
-		return fmt.Errorf("check budget: %w", err) // fail closed
-	}
-
-	if spent >= *budget {
-		return ErrBudgetExceeded
-	}
-
-	// Alert if approaching threshold (80% default)
-	if spent >= *budget*0.8 {
-		e.publishEvent(ctx, "", "", "budget.alert", "system", "", map[string]any{
-			"org_id": orgID,
-			"spent":  spent,
-			"budget": *budget,
-		})
-	}
-
-	return nil
-}
-
-// checkBudgetForOrg loads the org budget and checks it.
-func (e *DAGExecutor) checkBudgetForOrg(ctx context.Context, orgID string) error {
-	var budget *float64
-	err := e.DB.QueryRow(ctx,
-		`SELECT budget_usd_monthly FROM organizations WHERE id = $1`, orgID).
-		Scan(&budget)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil
-		}
-		return fmt.Errorf("load org budget: %w", err)
-	}
-	return e.checkBudget(ctx, orgID, budget)
-}
-
 // tryReplan attempts to replan a failed subtask.
 // Returns true if replanning was successful and new subtasks were created.
 func (e *DAGExecutor) tryReplan(
@@ -924,14 +1036,14 @@ func (e *DAGExecutor) loadSubtasks(ctx context.Context, taskID string) ([]models
 	return subtasks, rows.Err()
 }
 
-// loadOrgAgents loads all active agents for an organization.
-func (e *DAGExecutor) loadOrgAgents(ctx context.Context, orgID string) ([]models.Agent, error) {
+// loadAgents loads all active agents.
+func (e *DAGExecutor) loadAgents(ctx context.Context) ([]models.Agent, error) {
 	rows, err := e.DB.Query(ctx,
-		`SELECT id, org_id, name, COALESCE(version,''), COALESCE(description,''), endpoint,
+		`SELECT id, name, COALESCE(version,''), COALESCE(description,''), endpoint,
 		        COALESCE(agent_card_url,''), COALESCE(agent_card,'{}'), card_fetched_at,
 		        COALESCE(capabilities, '[]'), COALESCE(skills,'[]'),
 		        COALESCE(status,'active'), created_at, updated_at
-		 FROM agents WHERE org_id = $1 AND status = 'active'`, orgID)
+		 FROM agents WHERE status = 'active'`)
 	if err != nil {
 		return nil, fmt.Errorf("query agents: %w", err)
 	}
@@ -942,7 +1054,7 @@ func (e *DAGExecutor) loadOrgAgents(ctx context.Context, orgID string) ([]models
 		var a models.Agent
 		var capsJSON, skillsJSON, agentCard []byte
 		err := rows.Scan(
-			&a.ID, &a.OrgID, &a.Name, &a.Version, &a.Description, &a.Endpoint,
+			&a.ID, &a.Name, &a.Version, &a.Description, &a.Endpoint,
 			&a.AgentCardURL, &agentCard, &a.CardFetchedAt,
 			&capsJSON, &skillsJSON,
 			&a.Status, &a.CreatedAt, &a.UpdatedAt)
@@ -971,17 +1083,63 @@ func (e *DAGExecutor) updateTaskStatus(ctx context.Context, taskID, status, errM
 	return err
 }
 
+// recordTemplateExecution records execution metrics when a template-based task reaches a terminal state.
+func (e *DAGExecutor) recordTemplateExecution(ctx context.Context, taskID, templateID string, templateVersion int, outcome string) {
+	if templateID == "" {
+		return
+	}
+
+	var duration int
+	var createdAt time.Time
+	var replanCount int
+	err := e.DB.QueryRow(ctx,
+		`SELECT created_at, replan_count FROM tasks WHERE id = $1`, taskID).
+		Scan(&createdAt, &replanCount)
+	if err != nil {
+		log.Printf("executor: record template execution: load task %s: %v", taskID, err)
+		return
+	}
+	if !createdAt.IsZero() {
+		duration = int(time.Since(createdAt).Seconds())
+	}
+
+	var hitlCount int
+	_ = e.DB.QueryRow(ctx,
+		`SELECT COUNT(*) FROM messages WHERE task_id = $1 AND sender_type = 'user'`, taskID).
+		Scan(&hitlCount)
+
+	_, err = e.DB.Exec(ctx,
+		`INSERT INTO template_executions (id, template_id, template_version, task_id, actual_steps, hitl_interventions, replan_count, outcome, duration_seconds, created_at)
+		 VALUES ($1, $2, $3, $4, '[]', $5, $6, $7, $8, NOW())`,
+		uuid.New().String(), templateID, templateVersion, taskID,
+		hitlCount, replanCount, outcome, duration)
+	if err != nil {
+		log.Printf("executor: insert template execution for task %s: %v", taskID, err)
+	}
+}
+
 // publishEvent persists an event and broadcasts it to SSE subscribers.
+// It looks up the task's conversation_id to also publish to conversation-level streams.
 func (e *DAGExecutor) publishEvent(ctx context.Context, taskID, subtaskID, eventType, actorType, actorID string, data map[string]any) {
 	if data == nil {
 		data = map[string]any{}
 	}
-	evt, err := e.EventStore.Save(ctx, taskID, subtaskID, eventType, actorType, actorID, data)
+
+	// Look up conversation_id for the task (if task exists)
+	var conversationID string
+	if taskID != "" {
+		_ = e.DB.QueryRow(ctx, `SELECT COALESCE(conversation_id, '') FROM tasks WHERE id = $1`, taskID).Scan(&conversationID)
+	}
+
+	evt, err := e.EventStore.SaveWithConversation(ctx, taskID, conversationID, subtaskID, eventType, actorType, actorID, data)
 	if err != nil {
 		log.Printf("executor: save event %s: %v", eventType, err)
 		return
 	}
 	e.Broker.Publish(evt)
+	if e.WebhookSender != nil {
+		go e.WebhookSender.Send(ctx, eventType, taskID, subtaskID, data)
+	}
 }
 
 // aggregateResults collects all subtask outputs into a combined task result.
@@ -1015,10 +1173,16 @@ func (e *DAGExecutor) publishSystemMessage(ctx context.Context, taskID, content 
 	msgID := uuid.New().String()
 	now := time.Now()
 
+	// Look up conversation_id for the task
+	var conversationID string
+	if taskID != "" {
+		_ = e.DB.QueryRow(ctx, `SELECT COALESCE(conversation_id, '') FROM tasks WHERE id = $1`, taskID).Scan(&conversationID)
+	}
+
 	_, err := e.DB.Exec(ctx,
-		`INSERT INTO messages (id, task_id, sender_type, sender_id, sender_name, content, mentions, created_at)
-		 VALUES ($1, $2, 'system', '', 'System', $3, '{}', $4)`,
-		msgID, taskID, content, now)
+		`INSERT INTO messages (id, task_id, conversation_id, sender_type, sender_id, sender_name, content, mentions, created_at)
+		 VALUES ($1, $2, $3, 'system', '', 'System', $4, '{}', $5)`,
+		msgID, taskID, conversationID, content, now)
 	if err != nil {
 		log.Printf("executor: insert system message: %v", err)
 		return
@@ -1037,10 +1201,16 @@ func (e *DAGExecutor) publishMessage(ctx context.Context, taskID, senderID, send
 	msgID := uuid.New().String()
 	now := time.Now()
 
+	// Look up conversation_id for the task
+	var conversationID string
+	if taskID != "" {
+		_ = e.DB.QueryRow(ctx, `SELECT COALESCE(conversation_id, '') FROM tasks WHERE id = $1`, taskID).Scan(&conversationID)
+	}
+
 	_, err := e.DB.Exec(ctx,
-		`INSERT INTO messages (id, task_id, sender_type, sender_id, sender_name, content, mentions, created_at)
-		 VALUES ($1, $2, 'agent', $3, $4, $5, '{}', $6)`,
-		msgID, taskID, senderID, senderName, content, now)
+		`INSERT INTO messages (id, task_id, conversation_id, sender_type, sender_id, sender_name, content, mentions, created_at)
+		 VALUES ($1, $2, $3, 'agent', $4, $5, $6, '{}', $7)`,
+		msgID, taskID, conversationID, senderID, senderName, content, now)
 	if err != nil {
 		log.Printf("executor: insert message: %v", err)
 		return

@@ -39,3 +39,7 @@ coverage/
 # === Worktrees ===
 .worktrees/
 .pnpm-store/
+.claude/
+.superpowers/
+CLAUDE.md
+.gstack/

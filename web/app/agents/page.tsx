@@ -1,42 +1,44 @@
 "use client";
 
-import { useEffect, useMemo } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
-import { Plus } from "lucide-react";
+import { Plus, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { AgentCard } from "@/components/agent/AgentCard";
-import { useOrgStore, useAgentStore } from "@/lib/store";
+import { useAgentStore } from "@/lib/store";
 
 export default function AgentsPage() {
-  const { orgs, loadOrgs, isLoading: orgsLoading } = useOrgStore();
-  const { agents, loadAgents, isLoading: agentsLoading } = useAgentStore();
+  const { agents, loadAgents, isLoading } = useAgentStore();
+  const [search, setSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
 
-  const orgId = useMemo(
-    () => (orgs.length > 0 ? orgs[0].id : null),
-    [orgs],
-  );
-
-  // Load orgs on mount
+  // Debounce search input (300ms).
   useEffect(() => {
-    if (orgs.length === 0) {
-      loadOrgs();
-    }
-  }, [orgs.length, loadOrgs]);
+    const timer = setTimeout(() => setDebouncedSearch(search), 300);
+    return () => clearTimeout(timer);
+  }, [search]);
 
-  // Load agents when org is available
+  // Load agents on mount and when search changes.
   useEffect(() => {
-    if (orgId) {
-      loadAgents(orgId);
-    }
-  }, [orgId, loadAgents]);
-
-  const isLoading = orgsLoading || agentsLoading;
+    void loadAgents(debouncedSearch || undefined);
+  }, [debouncedSearch, loadAgents]);
 
   return (
     <div className="flex h-full flex-col">
       {/* Header */}
       <div className="flex items-center justify-between border-b border-border px-6 py-4">
-        <h1 className="text-lg font-semibold text-foreground">Agents</h1>
+        <div className="flex items-center gap-4">
+          <h1 className="text-lg font-semibold text-foreground">Agents</h1>
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" />
+            <input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search agents..."
+              className="w-64 rounded-lg border border-input bg-transparent pl-10 pr-4 py-1.5 text-sm text-foreground placeholder:text-muted-foreground transition-colors focus-visible:border-ring focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 dark:bg-input/30"
+            />
+          </div>
+        </div>
         <Link href="/agents/register">
           <Button>
             <Plus className="size-4" />
@@ -55,7 +57,9 @@ export default function AgentsPage() {
           <div className="flex h-64 items-center justify-center">
             <div className="text-center">
               <p className="text-sm text-muted-foreground">
-                No agents registered. Register your first agent!
+                {debouncedSearch
+                  ? "No agents match your search."
+                  : "No agents registered. Register your first agent!"}
               </p>
             </div>
           </div>

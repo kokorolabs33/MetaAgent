@@ -46,18 +46,39 @@ func (b *Broker) Unsubscribe(taskID string, ch chan *models.Event) {
 	}
 }
 
-// Publish sends an event to all subscribers of a task.
+// Publish sends an event to all subscribers of a task, and also to conversation-level
+// subscribers if the event has a ConversationID.
 // If a subscriber's channel is full, the event is dropped (they can catch up from DB).
 func (b *Broker) Publish(event *models.Event) {
 	b.mu.RLock()
-	subs := b.subscribers[event.TaskID]
+	taskSubs := b.subscribers[event.TaskID]
+	var convSubs []chan *models.Event
+	if event.ConversationID != "" {
+		convSubs = b.subscribers["conv:"+event.ConversationID]
+	}
 	b.mu.RUnlock()
 
-	for _, ch := range subs {
+	for _, ch := range taskSubs {
 		select {
 		case ch <- event:
 		default:
-			// Subscriber too slow, drop event (they can catch up from DB)
 		}
 	}
+	for _, ch := range convSubs {
+		select {
+		case ch <- event:
+		default:
+		}
+	}
+}
+
+// SubscribeConversation returns a channel that receives events for a given conversation.
+// Call UnsubscribeConversation when done.
+func (b *Broker) SubscribeConversation(conversationID string) chan *models.Event {
+	return b.Subscribe("conv:" + conversationID)
+}
+
+// UnsubscribeConversation removes a channel from conversation subscriptions and closes it.
+func (b *Broker) UnsubscribeConversation(conversationID string, ch chan *models.Event) {
+	b.Unsubscribe("conv:"+conversationID, ch)
 }

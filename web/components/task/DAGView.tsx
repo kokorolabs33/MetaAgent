@@ -44,12 +44,12 @@ function layoutSubtasks(
     if (visited.has(id)) return 0;
     visited.add(id);
     const st = subtaskMap.get(id);
-    if (!st || st.depends_on.length === 0) {
+    if (!st || (st.depends_on ?? []).length === 0) {
       layerMap.set(id, 0);
       return 0;
     }
     let maxDepLayer = 0;
-    for (const depId of st.depends_on) {
+    for (const depId of st.depends_on ?? []) {
       const depLayer = getLayer(depId, visited);
       if (depLayer + 1 > maxDepLayer) maxDepLayer = depLayer + 1;
     }
@@ -89,7 +89,7 @@ function layoutSubtasks(
 
   const edges: Edge[] = [];
   for (const st of subtasks) {
-    for (const depId of st.depends_on) {
+    for (const depId of st.depends_on ?? []) {
       edges.push({
         id: `${depId}->${st.id}`,
         source: depId,

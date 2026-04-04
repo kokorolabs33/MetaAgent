@@ -24,6 +24,7 @@ RULES:
 - Use depends_on with subtask IDs to define execution order
 - Subtasks with no dependencies can run in parallel
 - Give each subtask a unique short ID like "s1", "s2", etc.
+- When a task involves multiple departments or perspectives, add a final synthesis subtask that depends on all previous subtasks to create a consolidated summary/recommendation
 - Return ONLY valid JSON, no markdown or explanation
 
 Available agents:
@@ -50,10 +51,20 @@ Respond with ONLY this JSON structure:
 {"summary":"replan summary","subtasks":[{"id":"s1_retry","agent_id":"<agent-uuid>","agent_name":"<agent-name>","instruction":"specific instruction","depends_on":[]}]}`
 
 // Plan calls the LLM to decompose a task into a DAG of subtasks.
-func (o *Orchestrator) Plan(ctx context.Context, task models.Task, agents []models.Agent) (*models.ExecutionPlan, error) {
+// policyConstraints is an optional string appended to the user message to guide
+// decomposition according to active policy rules (may be empty).
+// templateSkeleton is an optional template structure that guides the decomposition
+// when a task is created from a workflow template (may be empty).
+func (o *Orchestrator) Plan(ctx context.Context, task models.Task, agents []models.Agent, policyConstraints, templateSkeleton string) (*models.ExecutionPlan, error) {
 	agentDesc := buildAgentDescription(agents)
 	systemPrompt := fmt.Sprintf(planPrompt, agentDesc)
 	userMsg := fmt.Sprintf("Task: %s\n\nDescription: %s", task.Title, task.Description)
+	if policyConstraints != "" {
+		userMsg += "\n" + policyConstraints
+	}
+	if templateSkeleton != "" {
+		userMsg += "\n" + templateSkeleton
+	}
 
 	response, err := callLLM(ctx, systemPrompt, userMsg)
 	if err != nil {
@@ -133,6 +144,62 @@ func callLLM(ctx context.Context, systemPrompt, userMsg string) (string, error) 
 
 	result := stripMarkdownFences(strings.TrimSpace(string(out)))
 	return result, nil
+}
+
+// IntentResult is the output of DetectIntent.
+type IntentResult struct {
+	Type        string `json:"type"`        // "chat" or "task"
+	Content     string `json:"content"`     // response text (for chat)
+	Title       string `json:"title"`       // task title (for task)
+	Description string `json:"description"` // task description (for task)
+}
+
+// ChatMessage represents a single message in conversation history for intent detection.
+type ChatMessage struct {
+	Role    string // "user", "agent", "system"
+	Name    string
+	Content string
+}
+
+const intentPrompt = `You are TaskHub's orchestrator. Analyze the user's message and decide:
+1. If the message describes a task that requires multiple agents/departments to collaborate, respond with a task decomposition.
+2. If the message is a question, clarification, follow-up discussion, or doesn't need agent collaboration, respond conversationally.
+
+Available agents:
+%s
+
+Respond with ONLY this JSON (no markdown fences):
+For conversational response: {"type":"chat","content":"your response"}
+For task creation: {"type":"task","title":"brief task title","description":"detailed task description"}`
+
+// DetectIntent analyzes a user message in context and decides whether it should
+// trigger a task creation or a conversational response.
+func (o *Orchestrator) DetectIntent(ctx context.Context, history []ChatMessage, userMessage string, agents []models.Agent) (*IntentResult, error) {
+	agentDesc := buildAgentDescription(agents)
+	systemPrompt := fmt.Sprintf(intentPrompt, agentDesc)
+
+	// Build conversation history context
+	var sb strings.Builder
+	for _, msg := range history {
+		fmt.Fprintf(&sb, "[%s] %s: %s\n", msg.Role, msg.Name, msg.Content)
+	}
+	sb.WriteString("\n[user] " + userMessage)
+
+	response, err := callLLM(ctx, systemPrompt, sb.String())
+	if err != nil {
+		return nil, fmt.Errorf("detect intent llm call: %w", err)
+	}
+
+	var result IntentResult
+	if err := json.Unmarshal([]byte(response), &result); err != nil {
+		return nil, fmt.Errorf("parse intent response: %w (response: %.200s)", err, response)
+	}
+
+	if result.Type != "chat" && result.Type != "task" {
+		return nil, fmt.Errorf("unexpected intent type: %q", result.Type)
+	}
+
+	return &result, nil
 }
 
 // stripMarkdownFences removes markdown code fences from LLM output.

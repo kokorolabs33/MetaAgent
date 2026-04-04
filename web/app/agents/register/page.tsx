@@ -1,23 +1,19 @@
 "use client";
 
-import { useEffect, useMemo, useState, useCallback } from "react";
+import { useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { ArrowLeft } from "lucide-react";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { AgentDiscoveryForm } from "@/components/agent/AdapterForm";
-import { useOrgStore, useAgentStore } from "@/lib/store";
+import { useAgentStore } from "@/lib/store";
+import { useToast } from "@/components/ui/toast";
 import type { Agent } from "@/lib/types";
 
 export default function RegisterAgentPage() {
   const router = useRouter();
-  const { orgs, currentOrg, loadOrgs, selectOrg } = useOrgStore();
   const { registerAgent } = useAgentStore();
-
-  const orgId = useMemo(
-    () => (orgs.length > 0 ? orgs[0].id : null),
-    [orgs],
-  );
+  const { addToast } = useToast();
 
   const [formData, setFormData] = useState<Partial<Agent>>({
     name: "",
@@ -28,37 +24,29 @@ export default function RegisterAgentPage() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Load orgs and select the first one if needed
-  useEffect(() => {
-    if (orgs.length === 0) {
-      loadOrgs();
-    } else if (!currentOrg && orgs.length > 0) {
-      void selectOrg(orgs[0].id);
-    }
-  }, [orgs, currentOrg, loadOrgs, selectOrg]);
-
   const handleSubmit = useCallback(
     async (e: React.FormEvent) => {
       e.preventDefault();
 
-      if (!orgId) return;
       if (!formData.name?.trim() || !formData.endpoint?.trim()) return;
 
       setIsSubmitting(true);
       setError(null);
 
       try {
-        await registerAgent(orgId, formData);
+        await registerAgent(formData);
+        addToast("success", `Agent "${formData.name}" registered`);
         router.push("/agents");
       } catch (err) {
-        setError(
-          err instanceof Error ? err.message : "Failed to register agent",
-        );
+        const msg =
+          err instanceof Error ? err.message : "Failed to register agent";
+        setError(msg);
+        addToast("error", msg);
       } finally {
         setIsSubmitting(false);
       }
     },
-    [orgId, formData, registerAgent, router],
+    [formData, registerAgent, router, addToast],
   );
 
   const isValid =

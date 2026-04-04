@@ -27,14 +27,8 @@ export function AgentDiscoveryForm({ value, onChange }: AgentDiscoveryFormProps)
 
     try {
       const { api } = await import("@/lib/api");
-      const { useOrgStore } = await import("@/lib/store");
-      const orgId = useOrgStore.getState().currentOrg?.id;
-      if (!orgId) {
-        setDiscoverError("No organization selected");
-        return;
-      }
 
-      const result = await api.agents.discover(orgId, url);
+      const result = await api.agents.discover(url);
       setDiscovered(result);
 
       onChange({
@@ -129,13 +123,13 @@ export function AgentDiscoveryForm({ value, onChange }: AgentDiscoveryFormProps)
             )}
           </div>
 
-          {discovered.capabilities.length > 0 && (
+          {(discovered.capabilities ?? []).length > 0 && (
             <div className="space-y-1">
               <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
                 Capabilities
               </p>
               <div className="flex flex-wrap gap-1">
-                {discovered.capabilities.map((cap) => (
+                {(discovered.capabilities ?? []).map((cap) => (
                   <Badge key={cap} variant="secondary" className="text-xs">
                     {cap}
                   </Badge>

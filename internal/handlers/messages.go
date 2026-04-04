@@ -28,8 +28,8 @@ type MessageHandler struct {
 	Broker     *events.Broker
 }
 
-// mentionRe matches @mentions in message content.
-var mentionRe = regexp.MustCompile(`@(\S+)`)
+// mentionRe matches <@agent_id|Display Name> mentions in message content.
+var mentionRe = regexp.MustCompile(`<@([^|]+)\|[^>]+>`)
 
 // sendMessageRequest is the expected body for POST /tasks/{id}/messages.
 type sendMessageRequest struct {
@@ -103,11 +103,11 @@ func (h *MessageHandler) Send(w http.ResponseWriter, r *http.Request) {
 
 	user := ctxutil.UserFromCtx(r.Context())
 
-	// Extract @mentions from content.
+	// Extract agent IDs from <@id|name> mentions.
 	matches := mentionRe.FindAllStringSubmatch(content, -1)
 	mentions := make([]string, 0, len(matches))
 	for _, m := range matches {
-		mentions = append(mentions, m[1])
+		mentions = append(mentions, m[1]) // m[1] is the agent ID
 	}
 
 	now := time.Now().UTC()
@@ -151,57 +151,29 @@ func (h *MessageHandler) Send(w http.ResponseWriter, r *http.Request) {
 	jsonCreated(w, msg)
 }
 
-// routeToAgents checks if any mentioned agent names have active subtasks
-// and sends a follow-up A2A message via the executor.
+// routeToAgents routes messages to agents by their IDs extracted from <@id|name> mentions.
 func (h *MessageHandler) routeToAgents(ctx context.Context, taskID string, mentions []string, content string) {
-	// Query subtasks that are running or input_required along with their agent names.
-	rows, err := h.DB.Query(ctx,
-		`SELECT s.id, s.agent_id, a.name
-		 FROM subtasks s
-		 JOIN agents a ON a.id = s.agent_id
-		 WHERE s.task_id = $1 AND s.status IN ('running', 'input_required')`, taskID)
-	if err != nil {
-		return
-	}
-	defer rows.Close()
-
-	type activeSubtask struct {
-		subtaskID string
-		agentID   string
-		agentName string
-	}
-
-	var active []activeSubtask
-	for rows.Next() {
-		var as activeSubtask
-		if err := rows.Scan(&as.subtaskID, &as.agentID, &as.agentName); err != nil {
+	for _, agentID := range mentions {
+		// Find active subtask for this agent in this task
+		var subtaskID string
+		err := h.DB.QueryRow(ctx,
+			`SELECT s.id
+			 FROM subtasks s
+			 WHERE s.task_id = $1 AND s.agent_id = $2 AND s.status IN ('running', 'input_required')
+			 ORDER BY s.created_at DESC
+			 LIMIT 1`, taskID, agentID).
+			Scan(&subtaskID)
+		if err != nil {
 			continue
 		}
-		active = append(active, as)
-	}
-	if rows.Err() != nil {
-		return
-	}
 
-	// Match mentions against active agent names.
-	// Supports partial match: @Finance matches "Finance Review Agent"
-	// because the regex only captures the first word after @.
-	for _, as := range active {
-		agentLower := strings.ToLower(as.agentName)
-		for _, m := range mentions {
-			mentionLower := strings.ToLower(m)
-			// Exact match or agent name starts with mention
-			if agentLower == mentionLower || strings.HasPrefix(agentLower, mentionLower+" ") || strings.Contains(agentLower, mentionLower) {
-				go func(sub activeSubtask) {
-					// Use background context — the HTTP request context will be canceled
-					// after the response is sent, but the A2A follow-up call takes time.
-					bgCtx := context.Background()
-					if err := h.Executor.SendFollowUp(bgCtx, taskID, sub.subtaskID, sub.agentID, fmt.Sprintf("User message: %s", content)); err != nil {
-						log.Printf("routeToAgents: follow-up to agent %s failed: %v", sub.agentName, err)
-					}
-				}(as)
-				break
+		go func(sid, aid string) {
+			// Use background context — the HTTP request context will be canceled
+			// after the response is sent, but the A2A follow-up call takes time.
+			bgCtx := context.Background()
+			if err := h.Executor.SendFollowUp(bgCtx, taskID, sid, aid, fmt.Sprintf("User message: %s", content)); err != nil {
+				log.Printf("routeToAgents: follow-up to agent %s failed: %v", aid, err)
 			}
-		}
+		}(subtaskID, agentID)
 	}
 }

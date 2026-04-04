@@ -1,56 +1,50 @@
 # docker-compose.agents.yml
-# Deal Review agents - 4 LLM-powered A2A agents
+# OpenAI-powered A2A agents — 4 department roles
 #
 # Usage:
-#   docker compose -f docker-compose.agents.yml up --build
-#
-# Auth: mounts host ~/.claude/ for Claude CLI authentication
+#   OPENAI_API_KEY=<key> docker compose -f docker-compose.agents.yml up --build
 
 services:
-  legal-agent:
+  engineering-agent:
     build:
       context: .
-      dockerfile: cmd/llmagent/Dockerfile
-    command: ["--role=legal", "--port=9091"]
+      dockerfile: cmd/openaiagent/Dockerfile
+    command: ["--role=engineering", "--port=9001"]
     ports:
-      - "9091:9091"
-    volumes:
-      - ~/.claude:/root/.claude:ro
-      - ~/.claude.json:/root/.claude.json:ro
+      - "9001:9001"
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
     restart: unless-stopped
 
   finance-agent:
     build:
       context: .
-      dockerfile: cmd/llmagent/Dockerfile
-    command: ["--role=finance", "--port=9092"]
+      dockerfile: cmd/openaiagent/Dockerfile
+    command: ["--role=finance", "--port=9002"]
     ports:
-      - "9092:9092"
-    volumes:
-      - ~/.claude:/root/.claude:ro
-      - ~/.claude.json:/root/.claude.json:ro
+      - "9002:9002"
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
     restart: unless-stopped
 
-  technical-agent:
+  legal-agent:
     build:
       context: .
-      dockerfile: cmd/llmagent/Dockerfile
-    command: ["--role=technical", "--port=9093"]
+      dockerfile: cmd/openaiagent/Dockerfile
+    command: ["--role=legal", "--port=9003"]
     ports:
-      - "9093:9093"
-    volumes:
-      - ~/.claude:/root/.claude:ro
-      - ~/.claude.json:/root/.claude.json:ro
+      - "9003:9003"
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
     restart: unless-stopped
 
-  deal-review-agent:
+  marketing-agent:
     build:
       context: .
-      dockerfile: cmd/llmagent/Dockerfile
-    command: ["--role=deal-review", "--port=9094"]
+      dockerfile: cmd/openaiagent/Dockerfile
+    command: ["--role=marketing", "--port=9004"]
     ports:
-      - "9094:9094"
-    volumes:
-      - ~/.claude:/root/.claude:ro
-      - ~/.claude.json:/root/.claude.json:ro
+      - "9004:9004"
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
     restart: unless-stopped

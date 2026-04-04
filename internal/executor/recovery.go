@@ -91,8 +91,8 @@ func (e *DAGExecutor) resumeTask(parentCtx context.Context, taskID string) error
 		return fmt.Errorf("load subtasks: %w", err)
 	}
 
-	// Load agents for this org
-	agents, err := e.loadOrgAgents(parentCtx, task.OrgID)
+	// Load all active agents
+	agents, err := e.loadAgents(parentCtx)
 	if err != nil {
 		return fmt.Errorf("load agents: %w", err)
 	}
@@ -187,11 +187,15 @@ func (e *DAGExecutor) loadTask(ctx context.Context, taskID string) (*models.Task
 	var metadata, plan, result []byte
 	var taskError *string
 	err := e.DB.QueryRow(ctx,
-		`SELECT id, org_id, title, COALESCE(description,''), status, created_by,
-		        metadata, plan, result, error, replan_count, created_at, completed_at
+		`SELECT id, title, COALESCE(description,''), status, created_by,
+		        metadata, plan, result, error, replan_count,
+		        COALESCE(template_id,''), COALESCE(template_version,0),
+		        created_at, completed_at
 		 FROM tasks WHERE id = $1`, taskID).
-		Scan(&t.ID, &t.OrgID, &t.Title, &t.Description, &t.Status, &t.CreatedBy,
-			&metadata, &plan, &result, &taskError, &t.ReplanCount, &t.CreatedAt, &completedAt)
+		Scan(&t.ID, &t.Title, &t.Description, &t.Status, &t.CreatedBy,
+			&metadata, &plan, &result, &taskError, &t.ReplanCount,
+			&t.TemplateID, &t.TemplateVersion,
+			&t.CreatedAt, &completedAt)
 	if err != nil {
 		return nil, err
 	}

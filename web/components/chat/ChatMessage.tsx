@@ -42,11 +42,11 @@ function stripCodeFence(content: string): string | null {
 }
 
 /**
- * Render inline text: **bold**, @mentions, and plain text.
+ * Render inline text: **bold**, @mentions (new <@id|name> and legacy @word), and plain text.
  */
 function renderInline(text: string, keyPrefix: string): React.ReactNode {
-  // Split on **bold** and @mentions
-  const parts = text.split(/(\*\*[^*]+\*\*|@\w+)/g);
+  // Split on **bold**, <@id|name> mentions, and @word mentions (legacy)
+  const parts = text.split(/(\*\*[^*]+\*\*|<@[^>]+>|@\S+)/g);
   return parts.map((part, i) => {
     if (part.startsWith("**") && part.endsWith("**")) {
       return (
@@ -55,6 +55,16 @@ function renderInline(text: string, keyPrefix: string): React.ReactNode {
         </strong>
       );
     }
+    // New format: <@agent_id|Display Name>
+    const mentionMatch = part.match(/^<@([^|]+)\|([^>]+)>$/);
+    if (mentionMatch) {
+      return (
+        <span key={`${keyPrefix}-${i}`} className="rounded bg-blue-500/20 px-1 py-0.5 font-semibold text-blue-400">
+          @{mentionMatch[2]}
+        </span>
+      );
+    }
+    // Legacy: @word
     if (part.startsWith("@")) {
       return (
         <span key={`${keyPrefix}-${i}`} className="font-bold text-purple-400">

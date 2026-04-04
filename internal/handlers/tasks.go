@@ -3,14 +3,15 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"taskhub/internal/audit"
@@ -30,8 +31,10 @@ type TaskHandler struct {
 
 // createTaskRequest is the expected body for POST /tasks.
 type createTaskRequest struct {
-	Title       string `json:"title"`
-	Description string `json:"description"`
+	Title             string            `json:"title"`
+	Description       string            `json:"description"`
+	TemplateID        string            `json:"template_id"`
+	TemplateVariables map[string]string `json:"template_variables"`
 }
 
 // Create handles POST /tasks.
@@ -50,25 +53,24 @@ func (h *TaskHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	org := ctxutil.OrgFromCtx(r.Context())
 	user := ctxutil.UserFromCtx(r.Context())
 
 	now := time.Now().UTC()
 	task := models.Task{
 		ID:          uuid.New().String(),
-		OrgID:       org.ID,
 		Title:       req.Title,
 		Description: strings.TrimSpace(req.Description),
 		Status:      "pending",
 		CreatedBy:   user.ID,
+		TemplateID:  req.TemplateID,
 		ReplanCount: 0,
 		CreatedAt:   now,
 	}
 
 	_, err := h.DB.Exec(r.Context(),
-		`INSERT INTO tasks (id, org_id, title, description, status, created_by, replan_count, created_at)
+		`INSERT INTO tasks (id, title, description, status, created_by, template_id, replan_count, created_at)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-		task.ID, task.OrgID, task.Title, task.Description, task.Status, task.CreatedBy, task.ReplanCount, task.CreatedAt)
+		task.ID, task.Title, task.Description, task.Status, task.CreatedBy, task.TemplateID, task.ReplanCount, task.CreatedAt)
 	if err != nil {
 		jsonError(w, "could not create task", http.StatusInternalServerError)
 		return
@@ -86,33 +88,62 @@ func (h *TaskHandler) Create(w http.ResponseWriter, r *http.Request) {
 }
 
 // List handles GET /tasks.
-// Returns tasks for the current org, optionally filtered by ?status=.
+// Returns tasks for the current org, optionally filtered by ?status= and ?q=,
+// with pagination via ?page= and ?per_page=.
 func (h *TaskHandler) List(w http.ResponseWriter, r *http.Request) {
-	org := ctxutil.OrgFromCtx(r.Context())
 	statusFilter := r.URL.Query().Get("status")
+	search := r.URL.Query().Get("q")
+	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+	perPage, _ := strconv.Atoi(r.URL.Query().Get("per_page"))
 
-	var (
-		rows pgx.Rows
-		err  error
-	)
+	if page < 1 {
+		page = 1
+	}
+	if perPage < 1 || perPage > 100 {
+		perPage = 20
+	}
+	offset := (page - 1) * perPage
+
+	// Build query dynamically.
+	var conditions []string
+	var args []any
+	argN := 1
 
 	if statusFilter != "" {
-		rows, err = h.DB.Query(r.Context(),
-			`SELECT id, org_id, title, description, status, created_by,
-				metadata, plan, result, error, replan_count, created_at, completed_at
-			 FROM tasks
-			 WHERE org_id = $1 AND status = $2
-			 ORDER BY created_at DESC`,
-			org.ID, statusFilter)
-	} else {
-		rows, err = h.DB.Query(r.Context(),
-			`SELECT id, org_id, title, description, status, created_by,
-				metadata, plan, result, error, replan_count, created_at, completed_at
-			 FROM tasks
-			 WHERE org_id = $1
-			 ORDER BY created_at DESC`,
-			org.ID)
+		conditions = append(conditions, fmt.Sprintf("status = $%d", argN))
+		args = append(args, statusFilter)
+		argN++
 	}
+	if search != "" {
+		conditions = append(conditions, fmt.Sprintf("(title ILIKE $%d OR description ILIKE $%d)", argN, argN))
+		args = append(args, "%"+search+"%")
+		argN++
+	}
+
+	where := ""
+	if len(conditions) > 0 {
+		where = "WHERE " + strings.Join(conditions, " AND ")
+	}
+
+	// Get total count.
+	var total int
+	countQuery := "SELECT COUNT(*) FROM tasks " + where
+	if err := h.DB.QueryRow(r.Context(), countQuery, args...).Scan(&total); err != nil {
+		jsonError(w, "count query failed", http.StatusInternalServerError)
+		return
+	}
+
+	// Get paginated results.
+	query := fmt.Sprintf(
+		`SELECT id, title, description, status, created_by,
+			metadata, plan, result, error, replan_count, created_at, completed_at
+		 FROM tasks %s
+		 ORDER BY created_at DESC
+		 LIMIT $%d OFFSET $%d`,
+		where, argN, argN+1)
+	args = append(args, perPage, offset)
+
+	rows, err := h.DB.Query(r.Context(), query, args...)
 	if err != nil {
 		jsonError(w, "query failed", http.StatusInternalServerError)
 		return
@@ -133,21 +164,31 @@ func (h *TaskHandler) List(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	jsonOK(w, tasks)
+	totalPages := 0
+	if total > 0 {
+		totalPages = (total + perPage - 1) / perPage
+	}
+
+	jsonOK(w, map[string]any{
+		"items":    tasks,
+		"total":    total,
+		"page":     page,
+		"per_page": perPage,
+		"pages":    totalPages,
+	})
 }
 
 // Get handles GET /tasks/{id}.
 // Returns the task with its subtasks (TaskWithSubtasks). 404 if not found.
 func (h *TaskHandler) Get(w http.ResponseWriter, r *http.Request) {
-	org := ctxutil.OrgFromCtx(r.Context())
 	id := chi.URLParam(r, "id")
 
 	task, err := scanTask(
 		h.DB.QueryRow(r.Context(),
-			`SELECT id, org_id, title, description, status, created_by,
+			`SELECT id, title, description, status, created_by,
 				metadata, plan, result, error, replan_count, created_at, completed_at
 			 FROM tasks
-			 WHERE id = $1 AND org_id = $2`, id, org.ID).Scan,
+			 WHERE id = $1`, id).Scan,
 	)
 	if err != nil {
 		jsonError(w, "task not found", http.StatusNotFound)
@@ -170,18 +211,12 @@ func (h *TaskHandler) Get(w http.ResponseWriter, r *http.Request) {
 // Cancel handles POST /tasks/{id}/cancel.
 // Verifies the task belongs to the org and delegates to the executor.
 func (h *TaskHandler) Cancel(w http.ResponseWriter, r *http.Request) {
-	org := ctxutil.OrgFromCtx(r.Context())
 	id := chi.URLParam(r, "id")
 
-	// Verify task belongs to this org.
-	var taskOrgID string
+	var exists bool
 	err := h.DB.QueryRow(r.Context(),
-		`SELECT org_id FROM tasks WHERE id = $1`, id).Scan(&taskOrgID)
-	if err != nil {
-		jsonError(w, "task not found", http.StatusNotFound)
-		return
-	}
-	if taskOrgID != org.ID {
+		`SELECT EXISTS(SELECT 1 FROM tasks WHERE id = $1)`, id).Scan(&exists)
+	if err != nil || !exists {
 		jsonError(w, "task not found", http.StatusNotFound)
 		return
 	}
@@ -210,6 +245,54 @@ func (h *TaskHandler) GetCost(w http.ResponseWriter, r *http.Request) {
 		"total_input_tokens":  totalInput,
 		"total_output_tokens": totalOutput,
 	})
+}
+
+// Approve handles POST /tasks/{id}/approve.
+// It approves or rejects a task that is in the "approval_required" state.
+func (h *TaskHandler) Approve(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+
+	var req struct {
+		Action string `json:"action"` // "approve" or "reject"
+	}
+	if err := decodeJSON(w, r, &req); err != nil {
+		jsonError(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if req.Action != "approve" && req.Action != "reject" {
+		jsonError(w, "action must be 'approve' or 'reject'", http.StatusBadRequest)
+		return
+	}
+
+	// Verify task exists and is in approval_required state
+	var status string
+	err := h.DB.QueryRow(r.Context(),
+		`SELECT status FROM tasks WHERE id = $1`, id).Scan(&status)
+	if err != nil {
+		jsonError(w, "task not found", http.StatusNotFound)
+		return
+	}
+	if status != "approval_required" {
+		jsonError(w, "task is not awaiting approval", http.StatusBadRequest)
+		return
+	}
+
+	if req.Action == "reject" {
+		_, _ = h.DB.Exec(r.Context(), `UPDATE tasks SET status = 'canceled' WHERE id = $1`, id)
+		jsonOK(w, map[string]string{"status": "rejected"})
+		return
+	}
+
+	// Approve: resume execution from stored plan
+	go func() { //nolint:contextcheck // context.Background is intentional as execution outlives the HTTP request
+		ctx := context.Background()
+		if err := h.Executor.ResumeApproved(ctx, id); err != nil {
+			log.Printf("approve: resume task %s: %v", id, err)
+		}
+	}()
+
+	jsonOK(w, map[string]string{"status": "approved"})
 }
 
 // ListSubtasks handles GET /tasks/{id}/subtasks.
@@ -261,7 +344,7 @@ func scanTask(scan func(dest ...any) error) (models.Task, error) {
 	var taskError *string
 
 	err := scan(
-		&t.ID, &t.OrgID, &t.Title, &t.Description, &t.Status, &t.CreatedBy,
+		&t.ID, &t.Title, &t.Description, &t.Status, &t.CreatedBy,
 		&metadata, &plan, &result, &taskError, &t.ReplanCount, &t.CreatedAt, &t.CompletedAt,
 	)
 	if err != nil {

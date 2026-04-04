@@ -33,6 +33,10 @@ const statusConfig: Record<
     label: "Cancelled",
     className: "bg-gray-500/20 text-gray-500 line-through",
   },
+  approval_required: {
+    label: "Awaiting Approval",
+    className: "bg-amber-500/20 text-amber-400",
+  },
 };
 
 function timeAgo(dateStr: string): string {

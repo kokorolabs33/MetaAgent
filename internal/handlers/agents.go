@@ -12,21 +12,22 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"taskhub/internal/a2a"
-	"taskhub/internal/ctxutil"
 	"taskhub/internal/models"
 )
 
 // AgentHandler provides HTTP handlers for agent CRUD operations.
 type AgentHandler struct {
-	DB       *pgxpool.Pool
-	Resolver *a2a.Resolver
+	DB         *pgxpool.Pool
+	Resolver   *a2a.Resolver
+	Aggregator *a2a.Aggregator // may be nil
 }
 
 // agentColumns is the SELECT column list for agents (order must match scanAgent).
-const agentColumns = `id, org_id, name, version, description, endpoint,
+const agentColumns = `id, name, version, description, endpoint,
 	agent_card_url, agent_card, card_fetched_at,
 	capabilities, skills,
-	status, created_at, updated_at`
+	status, is_online, last_health_check, skill_hash,
+	created_at, updated_at`
 
 // scanAgent scans a row into an Agent, handling JSONB columns via []byte intermediaries.
 func scanAgent(scan func(dest ...any) error) (models.Agent, error) {
@@ -34,10 +35,11 @@ func scanAgent(scan func(dest ...any) error) (models.Agent, error) {
 	var agentCard, capabilitiesJSON, skillsJSON []byte
 
 	err := scan(
-		&a.ID, &a.OrgID, &a.Name, &a.Version, &a.Description, &a.Endpoint,
+		&a.ID, &a.Name, &a.Version, &a.Description, &a.Endpoint,
 		&a.AgentCardURL, &agentCard, &a.CardFetchedAt,
 		&capabilitiesJSON, &skillsJSON,
-		&a.Status, &a.CreatedAt, &a.UpdatedAt,
+		&a.Status, &a.IsOnline, &a.LastHealthCheck, &a.SkillHash,
+		&a.CreatedAt, &a.UpdatedAt,
 	)
 	if err != nil {
 		return a, err
@@ -57,15 +59,26 @@ func scanAgent(scan func(dest ...any) error) (models.Agent, error) {
 	return a, nil
 }
 
-// List returns all agents for the current organization.
+// List returns all agents for the current organization, optionally filtered by ?q=.
 func (h *AgentHandler) List(w http.ResponseWriter, r *http.Request) {
-	org := ctxutil.OrgFromCtx(r.Context())
+	search := r.URL.Query().Get("q")
 
-	rows, err := h.DB.Query(r.Context(),
-		`SELECT `+agentColumns+`
-		 FROM agents
-		 WHERE org_id = $1
-		 ORDER BY created_at DESC`, org.ID)
+	var query string
+	var args []any
+
+	if search != "" {
+		query = `SELECT ` + agentColumns + `
+			FROM agents
+			WHERE name ILIKE $1 OR description ILIKE $1
+			ORDER BY created_at DESC`
+		args = []any{"%" + search + "%"}
+	} else {
+		query = `SELECT ` + agentColumns + `
+			FROM agents
+			ORDER BY created_at DESC`
+	}
+
+	rows, err := h.DB.Query(r.Context(), query, args...)
 	if err != nil {
 		jsonError(w, "query failed", http.StatusInternalServerError)
 		return
@@ -91,11 +104,38 @@ func (h *AgentHandler) List(w http.ResponseWriter, r *http.Request) {
 
 // createAgentRequest is the expected body for POST /agents.
 type createAgentRequest struct {
-	Name         string   `json:"name"`
-	Version      string   `json:"version"`
-	Description  string   `json:"description"`
-	Endpoint     string   `json:"endpoint"`
-	Capabilities []string `json:"capabilities"`
+	Name         string          `json:"name"`
+	Version      string          `json:"version"`
+	Description  string          `json:"description"`
+	Endpoint     string          `json:"endpoint"`
+	Capabilities json.RawMessage `json:"capabilities"`
+}
+
+// parseCapabilities handles capabilities as either []string or {key: bool} object.
+func parseCapabilities(raw json.RawMessage) []string {
+	if len(raw) == 0 {
+		return []string{}
+	}
+
+	// Try []string first
+	var arr []string
+	if err := json.Unmarshal(raw, &arr); err == nil {
+		return arr
+	}
+
+	// Try map[string]bool (AgentCard format)
+	var obj map[string]bool
+	if err := json.Unmarshal(raw, &obj); err == nil {
+		var result []string
+		for k, v := range obj {
+			if v {
+				result = append(result, k)
+			}
+		}
+		return result
+	}
+
+	return []string{}
 }
 
 // Create adds a new agent to the organization.
@@ -113,7 +153,6 @@ func (h *AgentHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	org := ctxutil.OrgFromCtx(r.Context())
 	now := time.Now().UTC()
 
 	// Discover agent card from endpoint (auto-populate name, description, etc.)
@@ -142,16 +181,20 @@ func (h *AgentHandler) Create(w http.ResponseWriter, r *http.Request) {
 		if req.Version == "" && discovered.Version != "" {
 			req.Version = discovered.Version
 		}
-		// Build capabilities list from card's boolean flags
+		// Build capabilities list from card's boolean flags if not provided
 		if len(req.Capabilities) == 0 {
+			var discoveredCaps []string
 			if discovered.Capabilities.Streaming {
-				req.Capabilities = append(req.Capabilities, "streaming")
+				discoveredCaps = append(discoveredCaps, "streaming")
 			}
 			if discovered.Capabilities.PushNotifications {
-				req.Capabilities = append(req.Capabilities, "pushNotifications")
+				discoveredCaps = append(discoveredCaps, "pushNotifications")
 			}
 			if discovered.Capabilities.StateTransitionHistory {
-				req.Capabilities = append(req.Capabilities, "stateTransitionHistory")
+				discoveredCaps = append(discoveredCaps, "stateTransitionHistory")
+			}
+			if len(discoveredCaps) > 0 {
+				req.Capabilities, _ = json.Marshal(discoveredCaps)
 			}
 		}
 	}
@@ -170,10 +213,7 @@ func (h *AgentHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Marshal capabilities to JSON for DB storage.
-	caps := req.Capabilities
-	if caps == nil {
-		caps = []string{}
-	}
+	caps := parseCapabilities(req.Capabilities)
 	capsJSON, err := json.Marshal(caps)
 	if err != nil {
 		jsonError(w, "invalid capabilities", http.StatusBadRequest)
@@ -185,9 +225,11 @@ func (h *AgentHandler) Create(w http.ResponseWriter, r *http.Request) {
 		version = "1.0.0"
 	}
 
+	// If discovery succeeded, agent is online
+	isOnline := cardFetchedAt != nil
+
 	agent := models.Agent{
 		ID:            uuid.New().String(),
-		OrgID:         org.ID,
 		Name:          req.Name,
 		Version:       version,
 		Description:   req.Description,
@@ -198,20 +240,21 @@ func (h *AgentHandler) Create(w http.ResponseWriter, r *http.Request) {
 		Capabilities:  caps,
 		Skills:        skills,
 		Status:        "active",
+		IsOnline:      isOnline,
 		CreatedAt:     now,
 		UpdatedAt:     now,
 	}
 
 	_, err = h.DB.Exec(r.Context(),
-		`INSERT INTO agents (id, org_id, name, version, description, endpoint,
+		`INSERT INTO agents (id, name, version, description, endpoint,
 			agent_card_url, agent_card, card_fetched_at,
 			capabilities, skills,
-			status, created_at, updated_at)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
-		agent.ID, agent.OrgID, agent.Name, agent.Version, agent.Description, agent.Endpoint,
+			status, is_online, last_health_check, created_at, updated_at)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
+		agent.ID, agent.Name, agent.Version, agent.Description, agent.Endpoint,
 		agent.AgentCardURL, agentCard, cardFetchedAt,
 		capsJSON, skills,
-		agent.Status, agent.CreatedAt, agent.UpdatedAt)
+		agent.Status, isOnline, cardFetchedAt, agent.CreatedAt, agent.UpdatedAt)
 	if err != nil {
 		if strings.Contains(err.Error(), "duplicate") || strings.Contains(err.Error(), "unique") {
 			jsonError(w, "agent name already exists in this organization", http.StatusConflict)
@@ -221,19 +264,22 @@ func (h *AgentHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if h.Aggregator != nil {
+		h.Aggregator.Invalidate()
+	}
+
 	jsonCreated(w, agent)
 }
 
 // Get returns a single agent by ID within the current organization.
 func (h *AgentHandler) Get(w http.ResponseWriter, r *http.Request) {
-	org := ctxutil.OrgFromCtx(r.Context())
 	id := chi.URLParam(r, "id")
 
 	agent, err := scanAgent(
 		h.DB.QueryRow(r.Context(),
 			`SELECT `+agentColumns+`
 			 FROM agents
-			 WHERE id = $1 AND org_id = $2`, id, org.ID).Scan,
+			 WHERE id = $1`, id).Scan,
 	)
 	if err != nil {
 		jsonError(w, "agent not found", http.StatusNotFound)
@@ -255,7 +301,6 @@ type updateAgentRequest struct {
 
 // Update modifies an existing agent's fields (partial update).
 func (h *AgentHandler) Update(w http.ResponseWriter, r *http.Request) {
-	org := ctxutil.OrgFromCtx(r.Context())
 	id := chi.URLParam(r, "id")
 
 	// Read current agent from DB first.
@@ -263,7 +308,7 @@ func (h *AgentHandler) Update(w http.ResponseWriter, r *http.Request) {
 		h.DB.QueryRow(r.Context(),
 			`SELECT `+agentColumns+`
 			 FROM agents
-			 WHERE id = $1 AND org_id = $2`, id, org.ID).Scan,
+			 WHERE id = $1`, id).Scan,
 	)
 	if err != nil {
 		jsonError(w, "agent not found", http.StatusNotFound)
@@ -353,19 +398,19 @@ func (h *AgentHandler) Update(w http.ResponseWriter, r *http.Request) {
 				capabilities = $5, status = $6,
 				agent_card_url = $7, agent_card = $8, card_fetched_at = $9, skills = $10,
 				updated_at = NOW()
-			 WHERE id = $11 AND org_id = $12`,
+			 WHERE id = $11`,
 			agent.Name, agent.Version, agent.Description, agent.Endpoint,
 			capsJSON, agent.Status,
 			agentCardURL, agentCard, cardFetchedAt, skills,
-			id, org.ID)
+			id)
 	} else {
 		_, err = h.DB.Exec(r.Context(),
 			`UPDATE agents SET
 				name = $1, version = $2, description = $3, endpoint = $4,
 				capabilities = $5, status = $6, updated_at = NOW()
-			 WHERE id = $7 AND org_id = $8`,
+			 WHERE id = $7`,
 			agent.Name, agent.Version, agent.Description, agent.Endpoint,
-			capsJSON, agent.Status, id, org.ID)
+			capsJSON, agent.Status, id)
 	}
 	if err != nil {
 		if strings.Contains(err.Error(), "duplicate") || strings.Contains(err.Error(), "unique") {
@@ -374,6 +419,10 @@ func (h *AgentHandler) Update(w http.ResponseWriter, r *http.Request) {
 		}
 		jsonError(w, "could not update agent", http.StatusInternalServerError)
 		return
+	}
+
+	if h.Aggregator != nil {
+		h.Aggregator.Invalidate()
 	}
 
 	// Re-read updated_at from DB.
@@ -385,11 +434,10 @@ func (h *AgentHandler) Update(w http.ResponseWriter, r *http.Request) {
 
 // Delete removes an agent from the organization.
 func (h *AgentHandler) Delete(w http.ResponseWriter, r *http.Request) {
-	org := ctxutil.OrgFromCtx(r.Context())
 	id := chi.URLParam(r, "id")
 
 	tag, err := h.DB.Exec(r.Context(),
-		`DELETE FROM agents WHERE id = $1 AND org_id = $2`, id, org.ID)
+		`DELETE FROM agents WHERE id = $1`, id)
 	if err != nil {
 		jsonError(w, "could not delete agent", http.StatusInternalServerError)
 		return
@@ -397,6 +445,10 @@ func (h *AgentHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	if tag.RowsAffected() == 0 {
 		jsonError(w, "agent not found", http.StatusNotFound)
 		return
+	}
+
+	if h.Aggregator != nil {
+		h.Aggregator.Invalidate()
 	}
 
 	w.WriteHeader(http.StatusNoContent)
@@ -410,14 +462,13 @@ type healthcheckResponse struct {
 
 // Healthcheck probes an agent's health by fetching its AgentCard.
 func (h *AgentHandler) Healthcheck(w http.ResponseWriter, r *http.Request) {
-	org := ctxutil.OrgFromCtx(r.Context())
 	id := chi.URLParam(r, "id")
 
 	agent, err := scanAgent(
 		h.DB.QueryRow(r.Context(),
 			`SELECT `+agentColumns+`
 			 FROM agents
-			 WHERE id = $1 AND org_id = $2`, id, org.ID).Scan,
+			 WHERE id = $1`, id).Scan,
 	)
 	if err != nil {
 		jsonError(w, "agent not found", http.StatusNotFound)
