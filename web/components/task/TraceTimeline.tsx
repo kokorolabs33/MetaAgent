@@ -18,9 +18,12 @@ const categoryColors: Record<string, { dot: string; badge: string }> = {
   policy: { dot: "bg-purple-500", badge: "bg-purple-500/20 text-purple-400" },
   template: { dot: "bg-cyan-500", badge: "bg-cyan-500/20 text-cyan-400" },
   agent: { dot: "bg-red-500", badge: "bg-red-500/20 text-red-400" },
+  replan: { dot: "bg-amber-500", badge: "bg-amber-500/20 text-amber-400" },
 };
 
 function getCategory(eventType: string): string {
+  // Special case: task.replanned maps to replan category (amber), not task (blue)
+  if (eventType === "task.replanned") return "replan";
   const prefix = eventType.split(".")[0];
   if (prefix in categoryColors) return prefix;
   return "message";
@@ -84,6 +87,12 @@ function describeEvent(event: TimelineEvent): string {
       return "Approval rejected";
     case "policy.evaluated":
       return `Policy evaluated: ${data.policy_name ?? "unknown"}`;
+    case "task.replanned": {
+      const replanData = event.data;
+      const failedName = (replanData.failed_subtask as string) ?? "unknown";
+      const newCount = (replanData.new_subtask_count as number) ?? 0;
+      return `Replanned: subtask ${failedName} failed. ${newCount} new subtask${newCount !== 1 ? "s" : ""} created.`;
+    }
     default:
       return event.type.replace(/[._]/g, " ");
   }
