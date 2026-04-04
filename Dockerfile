@@ -19,6 +19,7 @@ COPY web/package.json web/pnpm-lock.yaml ./
 RUN pnpm install --frozen-lockfile
 
 COPY web/ ./
+ENV NEXT_PUBLIC_API_URL=http://localhost:8080
 RUN pnpm build
 
 # ─── Stage 3: Runtime ───────────────────────────────────────
@@ -35,6 +36,9 @@ COPY --from=backend-build /server /app/server
 COPY --from=frontend-build /app/web/.next/standalone /app/web
 COPY --from=frontend-build /app/web/.next/static /app/web/.next/static
 COPY --from=frontend-build /app/web/public /app/web/public
+
+ENV NEXT_PUBLIC_API_URL=http://localhost:8080
+ENV HOSTNAME=0.0.0.0
 
 EXPOSE 8080 3000
 

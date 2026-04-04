@@ -1,0 +1,78 @@
+# docker-compose.yml — One-click TaskHub startup
+# Usage: ANTHROPIC_API_KEY=sk-... docker compose up
+# Optional: OPENAI_API_KEY=sk-... enables demo agents (uncomment agent services below)
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: taskhub
+      POSTGRES_USER: taskhub
+      POSTGRES_PASSWORD: taskhub  # pragma: allowlist secret
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U taskhub -d taskhub"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+
+  platform:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+      - "3000:3000"
+    environment:
+      DATABASE_URL: postgres://taskhub:taskhub@postgres:5432/taskhub?sslmode=disable  # pragma: allowlist secret
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      PORT: "8080"
+      FRONTEND_URL: http://localhost:3000
+      TASKHUB_MODE: local
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # Optional: OpenAI-powered demo agents
+  # Uncomment and set OPENAI_API_KEY to enable
+  # engineering-agent:
+  #   build:
+  #     context: .
+  #     dockerfile: cmd/openaiagent/Dockerfile
+  #   command: ["--role=engineering", "--port=9001"]
+  #   environment:
+  #     - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+  #   restart: unless-stopped
+  #
+  # finance-agent:
+  #   build:
+  #     context: .
+  #     dockerfile: cmd/openaiagent/Dockerfile
+  #   command: ["--role=finance", "--port=9002"]
+  #   environment:
+  #     - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+  #   restart: unless-stopped
+  #
+  # legal-agent:
+  #   build:
+  #     context: .
+  #     dockerfile: cmd/openaiagent/Dockerfile
+  #   command: ["--role=legal", "--port=9003"]
+  #   environment:
+  #     - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+  #   restart: unless-stopped
+  #
+  # marketing-agent:
+  #   build:
+  #     context: .
+  #     dockerfile: cmd/openaiagent/Dockerfile
+  #   command: ["--role=marketing", "--port=9004"]
+  #   environment:
+  #     - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+  #   restart: unless-stopped
+
+volumes:
+  pgdata:
