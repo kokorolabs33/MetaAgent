@@ -19,8 +19,11 @@ type StreamHandler struct {
 }
 
 // Stream handles GET /tasks/{id}/events.
-// It replays historical events from the database then streams live events via SSE.
-// Supports Last-Event-ID for reconnection catchup.
+// It subscribes to live events FIRST, then replays historical events from the
+// database, deduplicating any events that arrived on the live channel during
+// the replay window. This eliminates the race condition where events published
+// between replay and subscribe would be lost. Supports Last-Event-ID for
+// reconnection catchup.
 func (h *StreamHandler) Stream(w http.ResponseWriter, r *http.Request) {
 	taskID := chi.URLParam(r, "id")
 
@@ -35,7 +38,12 @@ func (h *StreamHandler) Stream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Determine replay strategy based on Last-Event-ID.
+	// 1. Subscribe to live events FIRST to avoid race condition.
+	//    The channel buffers up to 64 events (per broker.go) while we replay.
+	ch := h.Broker.Subscribe(taskID)
+	defer h.Broker.Unsubscribe(taskID, ch)
+
+	// 2. Replay historical events from the database.
 	lastEventID := r.Header.Get("Last-Event-ID")
 
 	var replayEvents []models.Event
@@ -63,17 +71,16 @@ func (h *StreamHandler) Stream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Write replayed events.
+	// 3. Write replayed events, tracking IDs for dedup against live channel.
+	seen := make(map[string]struct{}, len(replayEvents))
 	for i := range replayEvents {
 		writeSSEEvent(w, &replayEvents[i])
+		seen[replayEvents[i].ID] = struct{}{}
 	}
 	flusher.Flush()
 
-	// Subscribe to live events.
-	ch := h.Broker.Subscribe(taskID)
-	defer h.Broker.Unsubscribe(taskID, ch)
-
-	// Stream live events until the client disconnects.
+	// 4. Stream live events with dedup. Events that were both persisted (replayed)
+	//    and published to the live channel during the replay window are skipped.
 	ctx := r.Context()
 	for {
 		select {
@@ -83,6 +90,10 @@ func (h *StreamHandler) Stream(w http.ResponseWriter, r *http.Request) {
 			if !ok {
 				// Channel was closed (unsubscribed).
 				return
+			}
+			if _, dup := seen[evt.ID]; dup {
+				delete(seen, evt.ID) // Free memory after dedup hit
+				continue
 			}
 			writeSSEEvent(w, evt)
 			flusher.Flush()
