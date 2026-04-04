@@ -30,7 +30,14 @@ Decimal phases appear between their surrounding integers in numeric order.
   3. `docker compose up` starts a fully functional TaskHub with seeded demo agents in under 2 minutes, no manual configuration required
   4. README contains hero screenshot or GIF, badge row, architecture diagram, and a quickstart that works on first attempt
   5. Subtask trace/timeline view shows chronological execution with agent name, duration, and output per subtask; adaptive replanning events surface as "replanned because X" entries
-**Plans**: TBD
+**Plans:** 4 plans
+
+Plans:
+- [ ] 01-01-PLAN.md — SSE race fix + Anthropic SDK replacement (backend core)
+- [ ] 01-02-PLAN.md — TraceTimeline replanning visibility (frontend)
+- [ ] 01-03-PLAN.md — Docker Compose one-click startup + agent seeding
+- [ ] 01-04-PLAN.md — README rewrite + demo verification checkpoint
+
 **UI hint**: yes
 
 ### Phase 2: Agent Status
@@ -85,7 +92,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Foundation | 0/TBD | Not started | - |
+| 1. Foundation | 0/4 | Planning complete | - |
 | 2. Agent Status | 0/TBD | Not started | - |
 | 3. Templates | 0/TBD | Not started | - |
 | 4. Parallel Dashboard | 0/TBD | Not started | - |
