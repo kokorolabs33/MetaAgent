@@ -166,6 +166,12 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
       if (newStatus) {
         set({ currentTask: { ...currentTask, status: newStatus } });
       }
+
+      // Handle replanning — reload full task to get new subtasks (per D-09)
+      if (event.type === "task.replanned") {
+        void get().selectTask(currentTask.id);
+        return;
+      }
     }
 
     // Handle subtask lifecycle events
