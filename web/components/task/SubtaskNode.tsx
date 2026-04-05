@@ -11,10 +11,13 @@ import {
   Lock,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { AgentStatusDot } from "@/components/agent/AgentStatusDot";
+import { useAgentStore } from "@/lib/store";
 
 interface SubtaskNodeData {
   label: string;
   agentName: string;
+  agentId: string;
   instruction: string;
   status: string;
   [key: string]: unknown;
@@ -72,6 +75,9 @@ function SubtaskNodeComponent({ data }: NodeProps) {
   const nodeData = data as SubtaskNodeData;
   const config = statusConfig[nodeData.status] ?? statusConfig.pending;
   const Icon = config.icon;
+  const agentStatus = useAgentStore((s) =>
+    s.agentStatuses[nodeData.agentId] ?? "unknown"
+  );
 
   const truncated =
     nodeData.instruction.length > 60
@@ -89,8 +95,9 @@ function SubtaskNodeComponent({ data }: NodeProps) {
           nodeData.status === "input_required" && "ring-2 ring-amber-500/30",
         )}
       >
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1.5">
           <Icon className={cn("size-4 shrink-0", config.iconClass)} />
+          <AgentStatusDot status={agentStatus} />
           <span className="truncate text-sm font-bold text-foreground">
             {nodeData.agentName}
           </span>

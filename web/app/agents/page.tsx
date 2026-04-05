@@ -8,9 +8,15 @@ import { AgentCard } from "@/components/agent/AgentCard";
 import { useAgentStore } from "@/lib/store";
 
 export default function AgentsPage() {
-  const { agents, loadAgents, isLoading } = useAgentStore();
+  const { agents, loadAgents, isLoading, connectStatusSSE, disconnectStatusSSE } = useAgentStore();
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
+
+  // Connect to agent status SSE for real-time status dots
+  useEffect(() => {
+    connectStatusSSE();
+    return () => disconnectStatusSSE();
+  }, [connectStatusSSE, disconnectStatusSSE]);
 
   // Debounce search input (300ms).
   useEffect(() => {

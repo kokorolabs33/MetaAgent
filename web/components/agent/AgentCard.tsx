@@ -3,6 +3,8 @@
 import { useRouter } from "next/navigation";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { AgentStatusDot } from "@/components/agent/AgentStatusDot";
+import { useAgentStore } from "@/lib/store";
 import type { Agent } from "@/lib/types";
 
 const statusConfig: Record<
@@ -30,6 +32,7 @@ interface AgentCardProps {
 export function AgentCard({ agent }: AgentCardProps) {
   const router = useRouter();
   const status = statusConfig[agent.status];
+  const agentStatus = useAgentStore((s) => s.agentStatuses[agent.id] ?? "unknown");
 
   return (
     <Card
@@ -39,6 +42,7 @@ export function AgentCard({ agent }: AgentCardProps) {
       <CardHeader>
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
+            <AgentStatusDot status={agentStatus} size="md" />
             <CardTitle className="truncate">{agent.name}</CardTitle>
             {agent.version && (
               <Badge variant="outline" className="text-xs">

@@ -80,6 +80,7 @@ function layoutSubtasks(
         data: {
           label: st.id,
           agentName: agentNames?.[st.agent_id] ?? st.agent_id,
+          agentId: st.agent_id,
           instruction: st.instruction,
           status: st.status,
         },

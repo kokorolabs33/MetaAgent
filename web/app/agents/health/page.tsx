@@ -9,7 +9,9 @@ import {
   Clock,
 } from "lucide-react";
 import { api } from "@/lib/api";
-import type { AgentHealthOverview } from "@/lib/types";
+import { useAgentStore } from "@/lib/store";
+import { AgentStatusDot } from "@/components/agent/AgentStatusDot";
+import type { AgentHealthOverview, AgentActivityStatus } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 type SortKey =
@@ -55,6 +57,13 @@ export default function AgentHealthPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [sortKey, setSortKey] = useState<SortKey>("total_subtasks");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
+  const agentStatuses = useAgentStore((s) => s.agentStatuses);
+  const { connectStatusSSE, disconnectStatusSSE } = useAgentStore();
+
+  useEffect(() => {
+    connectStatusSSE();
+    return () => disconnectStatusSSE();
+  }, [connectStatusSSE, disconnectStatusSSE]);
 
   useEffect(() => {
     const load = async () => {
@@ -251,12 +260,9 @@ export default function AgentHealthPage() {
                     className="border-b border-border/50 hover:bg-gray-800/30"
                   >
                     <td className="px-4 py-3">
-                      <span
-                        className={cn(
-                          "inline-block size-2.5 rounded-full",
-                          agent.is_online ? "bg-green-500" : "bg-red-500",
-                        )}
-                        title={agent.is_online ? "Online" : "Offline"}
+                      <AgentStatusDot
+                        status={(agentStatuses[agent.id] ?? (agent.is_online ? "online" : "offline")) as AgentActivityStatus}
+                        size="md"
                       />
                     </td>
                     <td className="px-4 py-3 font-medium text-foreground">

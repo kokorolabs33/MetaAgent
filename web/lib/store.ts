@@ -10,20 +10,28 @@ import type {
   Message,
   TaskEvent,
 } from "./types";
-import { connectSSE } from "./sse";
+import { connectSSE, connectAgentStatusSSE } from "./sse";
+import type { AgentActivityStatus } from "./types";
 
 // ─── Agent Store ────────────────────────────────────────────
 interface AgentStore {
   agents: Agent[];
   isLoading: boolean;
+  agentStatuses: Record<string, AgentActivityStatus>;
+  statusSSEDisconnect: (() => void) | null;
   loadAgents: (q?: string) => Promise<void>;
   registerAgent: (data: Partial<Agent>) => Promise<Agent>;
   deleteAgent: (id: string) => Promise<void>;
+  connectStatusSSE: () => void;
+  disconnectStatusSSE: () => void;
+  getAgentStatus: (agentId: string) => AgentActivityStatus;
 }
 
-export const useAgentStore = create<AgentStore>((set) => ({
+export const useAgentStore = create<AgentStore>((set, get) => ({
   agents: [],
   isLoading: false,
+  agentStatuses: {},
+  statusSSEDisconnect: null,
 
   loadAgents: async (q?: string) => {
     set({ isLoading: true });
@@ -44,6 +52,37 @@ export const useAgentStore = create<AgentStore>((set) => ({
   deleteAgent: async (id) => {
     await api.agents.delete(id);
     set((s) => ({ agents: s.agents.filter((a) => a.id !== id) }));
+  },
+
+  connectStatusSSE: () => {
+    // Prevent duplicate connections
+    get().disconnectStatusSSE();
+
+    const disconnect = connectAgentStatusSSE((event) => {
+      if (event.type === "agent.status_changed") {
+        const data = event.data;
+        const agentId = data.agent_id as string;
+        const activityStatus = data.activity_status as AgentActivityStatus;
+        if (agentId && activityStatus) {
+          set((s) => ({
+            agentStatuses: { ...s.agentStatuses, [agentId]: activityStatus },
+          }));
+        }
+      }
+    });
+    set({ statusSSEDisconnect: disconnect });
+  },
+
+  disconnectStatusSSE: () => {
+    const disconnect = get().statusSSEDisconnect;
+    if (disconnect) {
+      disconnect();
+      set({ statusSSEDisconnect: null });
+    }
+  },
+
+  getAgentStatus: (agentId: string): AgentActivityStatus => {
+    return get().agentStatuses[agentId] ?? "unknown";
   },
 }));
 

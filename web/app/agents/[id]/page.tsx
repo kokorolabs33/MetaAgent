@@ -9,7 +9,8 @@ import { Badge } from "@/components/ui/badge";
 import { api } from "@/lib/api";
 import { useAgentStore } from "@/lib/store";
 import { useToast } from "@/components/ui/toast";
-import type { Agent } from "@/lib/types";
+import { AgentStatusDot } from "@/components/agent/AgentStatusDot";
+import type { Agent, AgentActivityStatus } from "@/lib/types";
 
 const statusConfig: Record<
   Agent["status"],
@@ -30,6 +31,7 @@ export default function AgentDetailPage() {
   const agentId = params.id as string;
 
   const { deleteAgent } = useAgentStore();
+  const agentStatus = useAgentStore((s) => s.agentStatuses[agentId] ?? "unknown") as AgentActivityStatus;
   const { addToast } = useToast();
 
   const [agent, setAgent] = useState<Agent | null>(null);
@@ -108,6 +110,7 @@ export default function AgentDetailPage() {
           >
             <ArrowLeft className="size-5" />
           </Link>
+          <AgentStatusDot status={agentStatus} size="md" />
           <h1 className="truncate text-lg font-semibold text-foreground">
             {agent.name}
           </h1>

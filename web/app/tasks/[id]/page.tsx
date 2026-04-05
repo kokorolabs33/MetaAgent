@@ -71,7 +71,7 @@ export default function TaskDetailPage() {
     connectSSE,
     disconnectSSE,
   } = useTaskStore();
-  const { agents: allAgents, loadAgents } = useAgentStore();
+  const { agents: allAgents, loadAgents, connectStatusSSE, disconnectStatusSSE } = useAgentStore();
 
   const [costData, setCostData] = useState<{
     total_cost_usd: number;
@@ -99,6 +99,12 @@ export default function TaskDetailPage() {
       void loadAgents();
     }
   }, [allAgents.length, loadAgents]);
+
+  // Connect to agent status SSE for real-time status dots on DAG nodes
+  useEffect(() => {
+    connectStatusSSE();
+    return () => disconnectStatusSSE();
+  }, [connectStatusSSE, disconnectStatusSSE]);
 
   // Load task + messages and connect SSE
   useEffect(() => {
