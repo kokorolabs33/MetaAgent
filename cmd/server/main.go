@@ -207,6 +207,7 @@ func main() {
 
 		// SSE
 		r.Get("/api/tasks/{id}/events", streamH.Stream)
+		r.Get("/api/tasks/stream", streamH.MultiStream)
 
 		// Task timeline
 		r.Get("/api/tasks/{id}/timeline", traceH.GetTimeline)
