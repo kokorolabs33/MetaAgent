@@ -1,9 +1,9 @@
 <p align="center">
   <h1 align="center">TaskHub</h1>
   <p align="center">
-    <strong>Open-source AI agent orchestration platform.</strong>
+    <strong>Open-source A2A multi-agent orchestration platform.</strong>
     <br />
-    <em>Kubernetes for AI Agents — orchestrate, manage, and govern agent workflows at scale.</em>
+    <em>Orchestrate AI agents via the A2A protocol — decompose tasks, manage execution, stream results.</em>
   </p>
   <p align="center">
     <a href="#quick-start">Quick Start</a> &bull;
@@ -14,118 +14,61 @@
   </p>
   <p align="center">
     <img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License" />
-    <img src="https://img.shields.io/badge/go-1.22+-00ADD8.svg" alt="Go" />
-    <img src="https://img.shields.io/badge/next.js-15-black.svg" alt="Next.js" />
-    <img src="https://img.shields.io/badge/status-community%20edition-green.svg" alt="Community Edition" />
+    <img src="https://img.shields.io/badge/go-1.26+-00ADD8.svg" alt="Go" />
+    <img src="https://img.shields.io/badge/next.js-16-black.svg" alt="Next.js" />
+    <img src="https://img.shields.io/badge/A2A-protocol-blueviolet.svg" alt="A2A Protocol" />
   </p>
 </p>
 
 ---
 
-TaskHub is an open-source platform for orchestrating AI agents across your organization. You describe what needs to be done — TaskHub decomposes it into a DAG of subtasks, routes them to the right agents, manages execution with retries and human-in-the-loop, and streams results back in real-time.
+TaskHub is an open-source platform for orchestrating AI agents using the [A2A (Agent-to-Agent) protocol](https://github.com/google/A2A). You describe what needs to be done — TaskHub decomposes it into a DAG of subtasks, routes them to the right agents via A2A, manages execution with retries and adaptive replanning, and streams results back in real-time.
 
-**TaskHub does not run agents.** It orchestrates them. Your agents live wherever they are — any HTTP service that can accept a task and return results can be plugged in via adapters, with zero code changes to your agent.
+**TaskHub does not run agents.** It orchestrates them. Your agents live wherever they are — any A2A-compatible service or HTTP endpoint can be plugged in via adapters, with zero code changes to your agent.
 
-> **Community Edition** — This is the open-source community version of TaskHub, designed for single-workspace use. Organization-level multi-tenant agent orchestration (team management, RBAC, SSO, billing) is on the roadmap.
-
-![TaskHub Dashboard](docs/images/task-dashboard.png)
-
-## Why TaskHub?
-
-AI agents are everywhere, but running them in production is chaos:
-
-- **Fragmented interfaces** — Every agent has a different API, input/output format, and lifecycle model
-- **No control plane** — Which agents are running? Which one failed? Which one costs the most?
-- **Manual orchestration** — Coordinating multi-agent workflows requires custom glue code
-- **Stateful agents, stateless infra** — Long-running agent tasks need checkpointing, retry, and recovery
-- **Zero governance** — No audit trail, no budget control, no access management
-
-TaskHub solves this by providing a unified orchestration layer that works with any agent.
-
-## Features
-
-### Core
-
-- **Agent Registry** — Register any external agent with a simple HTTP endpoint. No SDK required, no agent modification needed.
-- **DAG Execution** — Tasks are automatically decomposed into subtask DAGs. Parallel when possible, sequential when dependent.
-- **Adapter System** — Plug in any agent via configurable HTTP polling adapters or the native TaskHub protocol. JSONPath mapping for custom APIs.
-- **Real-time Streaming** — SSE-based event stream with persistent event store. Browser auto-reconnect with zero event loss.
-
-### Collaboration
-
-- **Group Chat** — Every task gets a chat room. Agents and users communicate via @mentions.
-- **Human-in-the-Loop** — Agents can pause execution and ask for confirmation. Users @reply in chat to continue.
-- **DAG Visualization** — React Flow pipeline view showing subtask status, dependencies, and progress in real-time.
-
-### Governance
-
-- **Audit Trail** — Every LLM call and agent invocation is logged with token counts, latency, and cost estimates.
-- **Budget Control** — Set monthly spend limits. Execution halts when budget is exceeded.
-- **Credential Encryption** — Agent auth tokens encrypted at rest with AES-256-GCM.
-
-![Task Detail — DAG Pipeline + Group Chat](docs/images/task-details.png)
-
-*Task detail view: DAG pipeline visualization on the left showing parallel agent execution (finance, marketing, operations → executive summary). Group chat on the right with real-time agent messages and results.*
-
-![Agent Registry](docs/images/agent-dashboard.png)
-
-*Agent registry: 7 enterprise agents registered with capabilities, endpoints, and health status.*
-
-## Architecture
-
-```
-User → Frontend (Next.js) → Backend API (Go/chi)
-                                    │
-                              ┌─────┴──────┐
-                              │ Orchestrator │  ← LLM decomposes tasks into DAG
-                              └─────┬──────┘
-                                    │
-                              ┌─────┴──────┐
-                              │ DAG Executor │  ← Polls agents, manages lifecycle
-                              └─────┬──────┘
-                                    │
-                    ┌───────────────┼───────────────┐
-                    │               │               │
-              ┌─────┴─────┐  ┌─────┴─────┐  ┌─────┴─────┐
-              │  Agent A   │  │  Agent B   │  │  Agent C   │
-              │ (your API) │  │ (your API) │  │ (your API) │
-              └───────────┘  └───────────┘  └───────────┘
-```
-
-**Design principles:**
-
-| Principle | Description |
-|-----------|-------------|
-| **Agents are external** | TaskHub orchestrates, it doesn't run agent code. Agents are HTTP services you own. |
-| **Adapter pattern** | Any HTTP API can be an agent. Configure JSON request/response mapping — zero code changes to your agent. |
-| **Event-sourced** | Every state change is persisted. Full replay, audit trail, and real-time SSE streaming. |
-| **Temporal-ready** | The executor interface is designed to swap in Temporal for durable execution when needed. |
+![TaskHub Dashboard](docs/images/hero-screenshot.png)
 
 ## Quick Start
 
 ### Prerequisites
 
-- Go 1.22+
+- Docker and Docker Compose
+- An Anthropic API key ([get one here](https://console.anthropic.com/))
+
+### 1. Clone
+
+```bash
+git clone https://github.com/kokorolabs33/taskhub.git
+cd taskhub
+```
+
+### 2. Start
+
+```bash
+ANTHROPIC_API_KEY=sk-your-key docker compose up
+```
+
+### 3. Open
+
+Visit **http://localhost:3000** — no login required. Four demo agents are pre-registered.
+
+Create a task and watch the DAG executor decompose it, route to agents, and stream results in real-time.
+
+<details>
+<summary>Development Setup (without Docker)</summary>
+
+### Prerequisites
+
+- Go 1.26+
 - Node.js 22+ and pnpm
 - PostgreSQL 15+
 
-### 1. Clone and install
+### Install and run
 
 ```bash
-git clone https://github.com/your-org/taskhub.git
-cd taskhub
 make install
-```
-
-### 2. Set up database
-
-```bash
 createdb taskhub
-```
 
-### 3. Start everything
-
-```bash
 # Terminal 1: Backend
 make dev-backend
 
@@ -138,38 +81,93 @@ make agents
 
 Open **http://localhost:3000** — no login required in local mode.
 
-### 4. Try it out
+</details>
 
-1. **Register an agent:** Go to Agents → Register Agent. Name: `mock-agent`, Endpoint: `http://localhost:9090`, Type: `Native`. Click Test Connection, then Register.
-2. **Create a task:** Go to Dashboard → New Task. Describe what you want done.
-3. **Watch it execute:** The orchestrator decomposes your task, assigns subtasks to agents, and streams results in real-time via the DAG view and group chat.
+## Why TaskHub?
+
+AI agents are everywhere, but orchestrating them in production is chaos:
+
+- **Fragmented interfaces** — Every agent has a different API, input/output format, and lifecycle model
+- **No control plane** — Which agents are running? Which one failed? Which one costs the most?
+- **Manual orchestration** — Coordinating multi-agent workflows requires custom glue code
+- **No standard protocol** — The A2A protocol exists, but few reference implementations demonstrate real multi-agent coordination
+
+TaskHub solves this by providing a unified A2A orchestration layer that works with any agent.
+
+## Features
+
+### Core
+
+- **A2A Protocol Server** — JSON-RPC 2.0 compliant A2A server with agent card aggregation and health monitoring
+- **Agent Registry** — Register any external agent with a simple HTTP endpoint. No SDK required, no agent modification needed.
+- **DAG Execution** — Tasks are automatically decomposed into subtask DAGs. Parallel when possible, sequential when dependent.
+- **Adaptive Replanning** — Failed subtasks are automatically replanned via LLM, with the replanning process visible in the UI timeline.
+- **Adapter System** — Plug in any agent via A2A protocol, HTTP polling adapters, or the native TaskHub protocol. JSONPath mapping for custom APIs.
+- **Real-time Streaming** — SSE-based event stream with persistent event store. Browser auto-reconnect with zero event loss.
+
+### Collaboration
+
+- **Conversation System** — Every task gets a conversation. Agents and users communicate via @mentions with Slack-style `<@id|name>` format.
+- **Human-in-the-Loop** — Agents can pause execution and ask for confirmation. Users @reply in chat to continue.
+- **DAG Visualization** — React Flow pipeline view showing subtask status, dependencies, and progress in real-time.
+- **Subtask Timeline** — Chronological trace view showing agent name, duration, and output per subtask with replanning event visibility.
+
+### Governance
+
+- **Policy Engine** — Define execution policies with approval thresholds. Tasks exceeding limits require human approval.
+- **Audit Trail** — Every LLM call and agent invocation is logged with token counts, latency, and cost estimates.
+- **Template System** — Save successful orchestration patterns as reusable templates with version tracking.
+- **Credential Encryption** — Agent auth tokens encrypted at rest with AES-256-GCM.
+
+## Architecture
+
+```
+User -> Frontend (Next.js) -> Backend API (Go/chi)
+                                    |
+                              +-----+------+
+                              | Orchestrator |  <- Anthropic SDK decomposes tasks into DAG
+                              +-----+------+
+                                    |
+                              +-----+------+
+                              | DAG Executor |  <- Polls agents, manages lifecycle, replans on failure
+                              +-----+------+
+                                    |
+                    +---------------+---------------+
+                    |               |               |
+              +-----+-----+  +-----+-----+  +-----+-----+
+              |  Agent A   |  |  Agent B   |  |  Agent C   |
+              | (A2A/HTTP) |  | (A2A/HTTP) |  | (A2A/HTTP) |
+              +-----------+  +-----------+  +-----------+
+```
+
+**Design principles:**
+
+| Principle | Description |
+|-----------|-------------|
+| **Agents are external** | TaskHub orchestrates, it doesn't run agent code. Agents are HTTP services you own. |
+| **A2A-native** | First-class A2A protocol support with agent card aggregation and JSON-RPC 2.0 server. |
+| **Adapter pattern** | Any HTTP API can be an agent. Configure JSON request/response mapping — zero code changes to your agent. |
+| **Event-sourced** | Every state change is persisted. Full replay, audit trail, and real-time SSE streaming. |
 
 ## Agent Protocol
 
-### Option 1: Native Protocol (easiest)
+### Option 1: A2A Protocol (recommended)
+
+TaskHub implements the [A2A protocol](https://github.com/google/A2A) for agent communication. Any A2A-compatible agent can be registered and will be orchestrated automatically.
+
+### Option 2: Native Protocol
 
 Implement three endpoints on your agent:
 
 ```
-POST /tasks              → Accept a task, return { "job_id": "..." }
-GET  /tasks/{id}/status  → Return current status
-POST /tasks/{id}/input   → Receive user input (optional)
-```
-
-Status response:
-
-```json
-{
-  "status": "running",
-  "progress": 0.65,
-  "messages": [{"content": "Analyzing data..."}],
-  "result": null
-}
+POST /tasks              -> Accept a task, return { "job_id": "..." }
+GET  /tasks/{id}/status  -> Return current status
+POST /tasks/{id}/input   -> Receive user input (optional)
 ```
 
 Status values: `running` | `completed` | `failed` | `needs_input`
 
-### Option 2: HTTP Poll Adapter (zero agent changes)
+### Option 3: HTTP Poll Adapter (zero agent changes)
 
 Already have an API? Configure a JSON mapping when registering:
 
@@ -191,18 +189,17 @@ Already have an API? Configure a JSON mapping when registering:
 }
 ```
 
-TaskHub adapts to your API — your agent doesn't need to change anything.
-
 ## Tech Stack
 
 | Layer | Technology |
 |-------|-----------|
-| Backend | Go, chi router, pgx (PostgreSQL) |
-| Frontend | Next.js 15, React 19, Tailwind CSS 4, Zustand |
+| Backend | Go 1.26, chi router, pgx (PostgreSQL), Anthropic SDK |
+| Frontend | Next.js 16, React 19, Tailwind CSS 4, Zustand |
 | Visualization | React Flow |
 | UI Components | shadcn/ui |
-| Database | PostgreSQL (13 tables, event-sourced) |
+| Database | PostgreSQL (event-sourced) |
 | Real-time | Server-Sent Events (SSE) |
+| Protocol | A2A (JSON-RPC 2.0) |
 
 ## Project Structure
 
@@ -212,20 +209,21 @@ taskhub/
 │   ├── server/         # API server
 │   └── openaiagent/    # OpenAI-powered A2A agents
 ├── internal/
+│   ├── a2a/            # A2A protocol server, aggregator, health checker
 │   ├── adapter/        # Agent adapters (HTTP poll, native protocol)
 │   ├── audit/          # Audit logging + cost tracking
 │   ├── auth/           # Authentication (local mode + OAuth ready)
 │   ├── config/         # Environment configuration
-│   ├── crypto/         # AES-256-GCM credential encryption
 │   ├── db/             # PostgreSQL connection + migrations
 │   ├── events/         # Event store + SSE broker
-│   ├── executor/       # DAG execution engine + crash recovery
+│   ├── executor/       # DAG execution engine + adaptive replanning
 │   ├── handlers/       # HTTP request handlers
 │   ├── models/         # Domain structs
-│   ├── orchestrator/   # LLM-based task decomposition
-│   ├── rbac/           # Role-based access control
-│   └── seed/           # Local mode data seeding
+│   ├── orchestrator/   # LLM-based task decomposition (Anthropic SDK)
+│   ├── policy/         # Policy evaluation engine
+│   └── seed/           # Data seeding (local mode + demo agents)
 ├── web/                # Next.js frontend
+├── docker-compose.yml  # One-click startup
 ├── Makefile            # Build, lint, test, dev commands
 ├── Dockerfile          # Multi-stage container build
 └── CLAUDE.md           # AI-assisted development guidelines
@@ -242,33 +240,20 @@ make fmt      # Format all code
 
 ## Roadmap
 
-### Community Edition (current)
-
+- [x] A2A protocol server with agent card aggregation
 - [x] Agent Registry with HTTP poll + native adapters
 - [x] DAG-based task execution with parallel subtasks
-- [x] LLM-powered task decomposition (orchestrator)
+- [x] Anthropic SDK integration for task decomposition
+- [x] Adaptive replanning with UI visibility
 - [x] Real-time SSE streaming with event persistence
-- [x] Group Chat with @mention interaction
-- [x] Human-in-the-loop (agent pauses for user input)
-- [x] Audit logging + cost tracking + budget control
-- [x] Mock agent for end-to-end testing
-- [x] Local mode (zero-config, no auth needed)
-- [ ] A2A protocol adapter
-- [ ] WebSocket/streaming agent support
-- [ ] Anthropic SDK integration (replace CLI)
-- [ ] Capability-based automatic agent routing
-- [ ] Session memory / conversation context
-
-### Organization Edition (planned)
-
-- [ ] Google/GitHub SSO authentication
-- [ ] Multi-tenant organization management
-- [ ] Team-based RBAC with agent-level permissions
-- [ ] Organization-wide agent marketplace
-- [ ] Cross-team agent sharing and governance
-- [ ] Advanced policy engine (rate limiting, approval workflows)
-- [ ] Cost allocation and chargeback per team
-- [ ] Enterprise audit and compliance features
+- [x] Conversation system with @mention interaction
+- [x] Policy engine with approval workflows
+- [x] Template system with version tracking
+- [x] Docker Compose one-click startup
+- [ ] Agent status indicators (online/working/idle/offline)
+- [ ] Task templates with experience accumulation
+- [ ] Multi-task parallel dashboard
+- [ ] Sub-agent chat intervention
 
 ## Contributing
 
