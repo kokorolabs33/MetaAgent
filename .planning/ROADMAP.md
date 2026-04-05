@@ -52,8 +52,8 @@ Plans:
 **Plans:** 2 plans
 
 Plans:
-- [ ] 02-01-PLAN.md — Backend agent status infrastructure (executor tracking, HealthChecker Broker, SSE endpoint)
-- [ ] 02-02-PLAN.md — Frontend AgentStatusDot component + store + SSE wiring across all surfaces
+- [x] 02-01-PLAN.md — Backend agent status infrastructure (executor tracking, HealthChecker Broker, SSE endpoint)
+- [x] 02-02-PLAN.md — Frontend AgentStatusDot component + store + SSE wiring across all surfaces
 
 **UI hint**: yes
 

@@ -16,7 +16,7 @@ Requirements for GitHub open-source readiness. Each maps to roadmap phases.
 
 ### Observability
 
-- [ ] **OBSV-01**: Agent status indicators show online/working/idle/offline states with color-coded dots and pulse animation when working
+- [x] **OBSV-01**: Agent status indicators show online/working/idle/offline states with color-coded dots and pulse animation when working
 - [ ] **OBSV-02**: Agent status changes are pushed via SSE on a global agent status channel (not polled)
 - [ ] **OBSV-03**: Subtask timeline/trace view shows chronological execution with agent name, duration, and output per subtask
 - [ ] **OBSV-04**: Adaptive replanning events are visible in the UI with "replanned because X" notifications and old vs new subtask comparison
@@ -73,7 +73,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | FOUND-02 | Phase 1 | Pending |
 | FOUND-03 | Phase 1 | Pending |
 | FOUND-04 | Phase 1 | Pending |
-| OBSV-01 | Phase 2 | Pending |
+| OBSV-01 | Phase 2 | Complete |
 | OBSV-02 | Phase 2 | Pending |
 | OBSV-03 | Phase 1 | Pending |
 | OBSV-04 | Phase 1 | Pending |
