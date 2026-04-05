@@ -196,6 +196,9 @@ export interface AgentHealthDetail extends AgentHealthOverview {
   skill_hash: string;
 }
 
+// Agent Activity Status (real-time, derived from SSE events)
+export type AgentActivityStatus = "online" | "working" | "idle" | "offline" | "unknown";
+
 // Audit Log
 
 export interface AuditLogEntry {
