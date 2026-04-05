@@ -48,11 +48,11 @@ Exceptions: none
 | Role | Size | Weight | Line Height |
 |------|------|--------|-------------|
 | Body | 14px (text-sm) | 400 (normal) | 1.5 (leading-normal) |
-| Label | 12px (text-xs) | 500 (medium) | 1.5 (leading-normal) |
+| Label | 12px (text-xs) | 400 (normal) | 1.5 (leading-normal) |
+| Card Title | 16px (text-base) | 700 (bold) | 1.4 (leading-snug) |
 | Heading | 20px (text-xl) | 700 (bold) | 1.2 (leading-tight) |
-| Card Title | 16px (text-base) | 500 (medium) | 1.4 (leading-snug) |
 
-Source: Matches existing codebase patterns. Card titles use `text-base font-medium` (CardTitle component). Body text uses `text-sm`. Page headings use `text-2xl font-bold` in agent health page but this phase uses `text-xl font-bold` for the tab bar area since the page is denser.
+Two weights only: 400 (normal) for body text and labels, 700 (bold) for card titles and headings. Hierarchy is established through size differences (12px, 14px, 16px, 20px) rather than intermediate weight steps.
 
 ---
 
@@ -146,7 +146,7 @@ Source: Follows the conditional coloring pattern established in agent health pag
 
 ### Page Structure
 
-The dashboard replaces the current `EmptyState` at route `/`. The AppShell routes `/` as a `isChatRoute`, so the dashboard renders inside the `ConversationSidebar + main` layout.
+The dashboard replaces the current `EmptyState` at route `/`. The AppShell routes `/` as a `isChatRoute`, so the dashboard renders inside the `ConversationSidebar + main` layout. The TaskFilterBar is the primary visual landmark; the active tab indicator (border-primary underline) is the focal point that orients the user to the current view.
 
 ```
 +------------------+---------------------------------------------------+
@@ -201,7 +201,7 @@ Note: Content area is already constrained to `flex-1` (viewport minus 256px side
 +--------------------------------------------------+
 ```
 
-- Title: `text-base font-medium truncate` (from CardTitle)
+- Title: `text-base font-bold truncate` (CardTitle at 16px weight 700)
 - Badge: Positioned top-right via `flex justify-between`
 - Progress bar: Full width minus the count label, height 6px (`h-1.5`), rounded (`rounded-full`)
 - Agent dots: Row of `AgentStatusDot` components (size="sm"), max 5 visible, overflow shows `+N` label
@@ -216,7 +216,7 @@ Note: Content area is already constrained to `flex-1` (viewport minus 256px side
 ```
 
 - Tabs: Horizontal row using `button` elements with bottom border indicator
-- Active tab: `border-b-2 border-primary text-foreground font-medium`
+- Active tab: `border-b-2 border-primary text-foreground font-bold`
 - Inactive tab: `text-muted-foreground hover:text-foreground`
 - Tab counts: `text-xs text-muted-foreground` inline after label, inside parentheses
 - Search: `Input` component from shadcn, `w-48` with `Search` Lucide icon prefix, right-aligned via `ml-auto`
