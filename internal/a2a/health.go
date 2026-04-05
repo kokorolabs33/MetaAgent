@@ -8,7 +8,11 @@ import (
 	"log"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"taskhub/internal/events"
+	"taskhub/internal/models"
 )
 
 // HealthChecker periodically probes all active agents, updates their online
@@ -17,6 +21,7 @@ type HealthChecker struct {
 	DB         *pgxpool.Pool
 	Resolver   *Resolver
 	Aggregator *Aggregator
+	Broker     *events.Broker
 	Interval   time.Duration
 }
 
@@ -49,12 +54,13 @@ type agentRow struct {
 	ID        string
 	Endpoint  string
 	SkillHash string
+	IsOnline  bool
 }
 
 // checkAll queries all active agents and checks each one.
 func (h *HealthChecker) checkAll(ctx context.Context) {
 	rows, err := h.DB.Query(ctx,
-		`SELECT id, endpoint, skill_hash FROM agents WHERE status = 'active'`)
+		`SELECT id, endpoint, skill_hash, is_online FROM agents WHERE status = 'active'`)
 	if err != nil {
 		log.Printf("health: query agents: %v", err)
 		return
@@ -64,7 +70,7 @@ func (h *HealthChecker) checkAll(ctx context.Context) {
 	var agents []agentRow
 	for rows.Next() {
 		var a agentRow
-		if err := rows.Scan(&a.ID, &a.Endpoint, &a.SkillHash); err != nil {
+		if err := rows.Scan(&a.ID, &a.Endpoint, &a.SkillHash, &a.IsOnline); err != nil {
 			log.Printf("health: scan agent: %v", err)
 			continue
 		}
@@ -91,6 +97,27 @@ func (h *HealthChecker) checkAll(ctx context.Context) {
 			online, newHash, agent.ID)
 		if err != nil {
 			log.Printf("health: update agent %s: %v", agent.ID, err)
+		}
+
+		// Publish status transition to global "agents" topic when is_online changes.
+		if online != agent.IsOnline && h.Broker != nil {
+			activityStatus := "offline"
+			if online {
+				activityStatus = "online"
+			}
+			dataJSON, _ := json.Marshal(map[string]any{
+				"agent_id":        agent.ID,
+				"activity_status": activityStatus,
+				"is_online":       online,
+			})
+			evt := &models.Event{
+				ID:        uuid.NewString(),
+				Type:      "agent.status_changed",
+				ActorType: "system",
+				Data:      dataJSON,
+				CreatedAt: time.Now(),
+			}
+			h.Broker.PublishGlobal("agents", evt)
 		}
 
 		if online && newHash != agent.SkillHash && agent.SkillHash != "" {

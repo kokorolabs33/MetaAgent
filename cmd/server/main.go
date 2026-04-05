@@ -113,6 +113,7 @@ func main() {
 		DB:         pool,
 		Resolver:   a2aResolver,
 		Aggregator: aggregator,
+		Broker:     broker,
 		Interval:   2 * time.Minute,
 	}
 	go healthChecker.Start(ctx)
@@ -131,6 +132,7 @@ func main() {
 	analyticsH := &handlers.AnalyticsHandler{DB: pool}
 	traceH := &handlers.TraceHandler{DB: pool}
 	agentHealthH := &handlers.AgentHealthHandler{DB: pool}
+	agentStatusStreamH := &handlers.AgentStatusStreamHandler{Broker: broker, DB: pool}
 	auditLogH := &handlers.AuditLogHandler{DB: pool}
 
 	// Router
@@ -181,6 +183,7 @@ func main() {
 		r.Get("/api/agents", agentH.List)
 		r.Post("/api/agents", agentH.Create)
 		r.Get("/api/agents/health/overview", agentHealthH.GetOverview)
+		r.Get("/api/agents/stream", agentStatusStreamH.Stream)
 		r.Get("/api/agents/{id}", agentH.Get)
 		r.Get("/api/agents/{id}/health", agentHealthH.GetHealth)
 		r.Put("/api/agents/{id}", agentH.Update)
