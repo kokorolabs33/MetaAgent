@@ -162,6 +162,7 @@ export const useConversationStore = create<ConversationStore>((set, get) => ({
         source: (data.source as string) ?? "conversation",
         completed_subtasks: 0,
         total_subtasks: 0,
+        agent_ids: [],
         created_at: event.created_at ?? new Date().toISOString(),
       };
       set((s) => {

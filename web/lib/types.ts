@@ -71,6 +71,7 @@ export interface Task {
   policy_applied?: string[];
   completed_subtasks: number;
   total_subtasks: number;
+  agent_ids: string[];
   created_at: string;
   completed_at?: string;
 }

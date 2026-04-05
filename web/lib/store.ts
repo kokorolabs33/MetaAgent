@@ -10,7 +10,7 @@ import type {
   Message,
   TaskEvent,
 } from "./types";
-import { connectSSE, connectAgentStatusSSE } from "./sse";
+import { connectSSE, connectAgentStatusSSE, connectMultiTaskSSE } from "./sse";
 import type { AgentActivityStatus } from "./types";
 
 // ─── Agent Store ────────────────────────────────────────────
@@ -321,6 +321,142 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
           result: event.data.result as Record<string, unknown>,
         },
       });
+    }
+  },
+}));
+
+// ─── Dashboard Store ────────────────────────────────────────
+
+type TaskProgress = { completed: number; total: number };
+
+interface DashboardStore {
+  tasks: Task[];
+  totalTasks: number;
+  currentPage: number;
+  totalPages: number;
+  taskProgress: Record<string, TaskProgress>;
+  isLoading: boolean;
+  error: string | null;
+  multiTaskSSEDisconnect: (() => void) | null;
+
+  loadDashboard: (params?: { status?: string; q?: string; page?: number }) => Promise<void>;
+  connectDashboardSSE: (taskIds: string[]) => void;
+  disconnectDashboardSSE: () => void;
+  handleDashboardEvent: (event: TaskEvent) => void;
+}
+
+export const useDashboardStore = create<DashboardStore>((set, get) => ({
+  tasks: [],
+  totalTasks: 0,
+  currentPage: 1,
+  totalPages: 0,
+  taskProgress: {},
+  isLoading: false,
+  error: null,
+  multiTaskSSEDisconnect: null,
+
+  loadDashboard: async (params) => {
+    set({ isLoading: true, error: null });
+    try {
+      const result = await api.tasks.list({
+        ...params,
+        per_page: 12, // UI-SPEC: 12 per page (4 rows × 3 cols)
+      });
+      // Build initial progress map from list response (Plan 01 extended
+      // the query to return completed_subtasks + total_subtasks).
+      const progress: Record<string, TaskProgress> = {};
+      for (const t of result.items) {
+        progress[t.id] = {
+          completed: t.completed_subtasks,
+          total: t.total_subtasks,
+        };
+      }
+      set({
+        tasks: result.items,
+        totalTasks: result.total,
+        currentPage: result.page,
+        totalPages: result.pages,
+        taskProgress: progress,
+        isLoading: false,
+      });
+    } catch (err) {
+      console.error("loadDashboard failed:", err);
+      set({ isLoading: false, error: "Failed to load tasks. Check your connection and try again." });
+    }
+  },
+
+  connectDashboardSSE: (taskIds) => {
+    get().disconnectDashboardSSE();
+    if (taskIds.length === 0) return;
+    const disconnect = connectMultiTaskSSE(taskIds, (event) => {
+      get().handleDashboardEvent(event as unknown as TaskEvent);
+    });
+    set({ multiTaskSSEDisconnect: disconnect });
+  },
+
+  disconnectDashboardSSE: () => {
+    const disconnect = get().multiTaskSSEDisconnect;
+    if (disconnect) {
+      disconnect();
+      set({ multiTaskSSEDisconnect: null });
+    }
+  },
+
+  handleDashboardEvent: (event) => {
+    const taskId = event.task_id;
+    if (!taskId) return;
+
+    // Task-level status updates: patch the task in the list.
+    if (event.type.startsWith("task.")) {
+      const statusMap: Record<string, Task["status"]> = {
+        "task.planning": "planning",
+        "task.running": "running",
+        "task.completed": "completed",
+        "task.failed": "failed",
+        "task.cancelled": "cancelled",
+        "task.approval_required": "approval_required",
+      };
+      const newStatus = statusMap[event.type];
+      if (newStatus) {
+        set((s) => ({
+          tasks: s.tasks.map((t) =>
+            t.id === taskId ? { ...t, status: newStatus } : t,
+          ),
+        }));
+      }
+      return;
+    }
+
+    // Subtask-level updates: maintain the progress map deltas.
+    // Per research recommendation 4: subtask.completed AND subtask.failed
+    // both count toward the progress bar's "completed" denominator because
+    // they are both finalized states.
+    if (event.type === "subtask.created") {
+      set((s) => {
+        const cur = s.taskProgress[taskId] ?? { completed: 0, total: 0 };
+        return {
+          taskProgress: {
+            ...s.taskProgress,
+            [taskId]: { completed: cur.completed, total: cur.total + 1 },
+          },
+        };
+      });
+      return;
+    }
+    if (event.type === "subtask.completed" || event.type === "subtask.failed") {
+      set((s) => {
+        const cur = s.taskProgress[taskId];
+        if (!cur) return s;
+        // Cap completed at total to avoid visual > 100% if SSE outruns list.
+        const nextCompleted = Math.min(cur.completed + 1, cur.total);
+        return {
+          taskProgress: {
+            ...s.taskProgress,
+            [taskId]: { completed: nextCompleted, total: cur.total },
+          },
+        };
+      });
+      return;
     }
   },
 }));

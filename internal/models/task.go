@@ -22,8 +22,9 @@ type Task struct {
 	CreatedAt       time.Time       `json:"created_at"`
 	CompletedAt     *time.Time      `json:"completed_at,omitempty"`
 
-	CompletedSubtasks int `json:"completed_subtasks"`
-	TotalSubtasks     int `json:"total_subtasks"`
+	CompletedSubtasks int      `json:"completed_subtasks"`
+	TotalSubtasks     int      `json:"total_subtasks"`
+	AgentIDs          []string `json:"agent_ids"`
 }
 
 type SubTask struct {

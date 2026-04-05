@@ -141,7 +141,8 @@ func (h *TaskHandler) List(w http.ResponseWriter, r *http.Request) {
 			t.metadata, t.plan, t.result, t.error, t.replan_count,
 			t.created_at, t.completed_at,
 			COALESCE(COUNT(s.id), 0) AS total_subtasks,
-			COALESCE(SUM(CASE WHEN s.status = 'completed' THEN 1 ELSE 0 END), 0) AS completed_subtasks
+			COALESCE(SUM(CASE WHEN s.status = 'completed' THEN 1 ELSE 0 END), 0) AS completed_subtasks,
+			ARRAY_REMOVE(ARRAY_AGG(DISTINCT s.agent_id) FILTER (WHERE s.agent_id IS NOT NULL AND s.agent_id != ''), NULL) AS agent_ids
 		 FROM tasks t
 		 LEFT JOIN subtasks s ON s.task_id = t.id
 		 %s
@@ -386,7 +387,7 @@ func scanTaskWithCounts(scan func(dest ...any) error) (models.Task, error) {
 	err := scan(
 		&t.ID, &t.Title, &t.Description, &t.Status, &t.CreatedBy,
 		&metadata, &plan, &result, &taskError, &t.ReplanCount, &t.CreatedAt, &t.CompletedAt,
-		&t.TotalSubtasks, &t.CompletedSubtasks,
+		&t.TotalSubtasks, &t.CompletedSubtasks, &t.AgentIDs,
 	)
 	if err != nil {
 		return t, err
@@ -403,6 +404,9 @@ func scanTaskWithCounts(scan func(dest ...any) error) (models.Task, error) {
 	}
 	if taskError != nil {
 		t.Error = *taskError
+	}
+	if t.AgentIDs == nil {
+		t.AgentIDs = []string{}
 	}
 
 	return t, nil
