@@ -14,6 +14,7 @@ import (
 	"log"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -46,6 +47,8 @@ type DAGExecutor struct {
 
 	cancels sync.Map // task_id → context.CancelFunc
 
+	agentRunningCount sync.Map // agent_id (string) → *int32 (atomic counter)
+
 	maxConcurrent      int // global max concurrent subtasks (default 10)
 	maxConcurrentAgent int // per-agent max concurrent subtasks (default 3)
 }
@@ -64,6 +67,49 @@ func (e *DAGExecutor) getMaxConcurrentAgent() int {
 		return e.maxConcurrentAgent
 	}
 	return 3
+}
+
+// incrAgentRunning increments the running count for an agent.
+// If the count transitions from 0->1, publishes agent.status_changed with activity_status="working".
+func (e *DAGExecutor) incrAgentRunning(agentID, agentName string) {
+	val, _ := e.agentRunningCount.LoadOrStore(agentID, new(int32))
+	counter := val.(*int32)
+	newVal := atomic.AddInt32(counter, 1)
+	if newVal == 1 {
+		e.publishAgentStatus(agentID, agentName, "working")
+	}
+}
+
+// decrAgentRunning decrements the running count for an agent.
+// If the count transitions from 1->0, publishes agent.status_changed with activity_status="idle".
+func (e *DAGExecutor) decrAgentRunning(agentID, agentName string) {
+	val, ok := e.agentRunningCount.Load(agentID)
+	if !ok {
+		return
+	}
+	counter := val.(*int32)
+	newVal := atomic.AddInt32(counter, -1)
+	if newVal == 0 {
+		e.publishAgentStatus(agentID, agentName, "idle")
+	}
+}
+
+// publishAgentStatus publishes an agent.status_changed event to the global "agents" Broker topic.
+// These events are NOT persisted to the event store (per D-06 — derive at runtime only).
+func (e *DAGExecutor) publishAgentStatus(agentID, agentName, activityStatus string) {
+	dataJSON, _ := json.Marshal(map[string]any{
+		"agent_id":        agentID,
+		"agent_name":      agentName,
+		"activity_status": activityStatus,
+	})
+	evt := &models.Event{
+		ID:        uuid.NewString(),
+		Type:      "agent.status_changed",
+		ActorType: "system",
+		Data:      dataJSON,
+		CreatedAt: time.Now(),
+	}
+	e.Broker.PublishGlobal("agents", evt)
 }
 
 // Execute is the main entry point for task execution.
@@ -465,6 +511,7 @@ func (e *DAGExecutor) runDAGLoop(ctx context.Context, task models.Task, subtasks
 				"agent_id": st.AgentID,
 				"attempt":  st.Attempt + 1,
 			})
+			e.incrAgentRunning(st.AgentID, agent.Name)
 
 			// Launch goroutine
 			stCopy := st
@@ -513,6 +560,7 @@ func (e *DAGExecutor) runSubtask(
 	inputMap := buildSubtaskInput(st, allSubtasks, agents)
 	inputJSON, err := json.Marshal(inputMap)
 	if err != nil {
+		e.decrAgentRunning(st.AgentID, agent.Name)
 		e.failSubtask(ctx, task.ID, st.ID, fmt.Sprintf("marshal subtask input: %v", err), allSubtasks)
 		return
 	}
@@ -559,6 +607,7 @@ func (e *DAGExecutor) runSubtask(
 	// Send A2A message to agent
 	result, err := e.A2AClient.SendMessage(ctx, agent.Endpoint, task.ID, "", parts)
 	if err != nil {
+		e.decrAgentRunning(st.AgentID, agent.Name)
 		e.failSubtask(ctx, task.ID, st.ID, fmt.Sprintf("a2a send failed: %v", err), allSubtasks)
 		return
 	}
@@ -602,6 +651,7 @@ func (e *DAGExecutor) handleA2AResult(
 		if err != nil {
 			log.Printf("executor: update subtask %s to completed: %v", st.ID, err)
 		}
+		e.decrAgentRunning(st.AgentID, agent.Name)
 
 		e.publishEvent(ctx, task.ID, st.ID, "subtask.completed", "agent", agent.ID, map[string]any{
 			"output": output,
@@ -647,6 +697,7 @@ func (e *DAGExecutor) handleA2AResult(
 				result.Error, st.ID); err != nil {
 				log.Printf("executor: retry reset for subtask %s: %v", st.ID, err)
 			}
+			e.decrAgentRunning(st.AgentID, agent.Name)
 			e.publishEvent(ctx, task.ID, st.ID, "subtask.failed", "agent", agent.ID, map[string]any{
 				"error":   result.Error,
 				"attempt": attempt,
@@ -656,6 +707,7 @@ func (e *DAGExecutor) handleA2AResult(
 		}
 
 		// Final failure
+		e.decrAgentRunning(st.AgentID, agent.Name)
 		e.failSubtask(ctx, task.ID, st.ID, result.Error, allSubtasks)
 
 	case "input-required":
@@ -663,6 +715,7 @@ func (e *DAGExecutor) handleA2AResult(
 		if _, err := e.DB.Exec(ctx, `UPDATE subtasks SET status = 'input_required' WHERE id = $1`, st.ID); err != nil {
 			log.Printf("executor: set input_required for subtask %s: %v", st.ID, err)
 		}
+		e.decrAgentRunning(st.AgentID, agent.Name)
 
 		// Publish event
 		e.publishEvent(ctx, task.ID, st.ID, "subtask.input_required", "agent", agent.ID, map[string]any{
@@ -685,6 +738,7 @@ func (e *DAGExecutor) handleA2AResult(
 	default:
 		// Unknown state — treat as failure
 		log.Printf("executor: subtask %s returned unexpected state %q", st.ID, result.State)
+		e.decrAgentRunning(st.AgentID, agent.Name)
 		e.failSubtask(ctx, task.ID, st.ID, fmt.Sprintf("unexpected agent state: %s", result.State), allSubtasks)
 	}
 }

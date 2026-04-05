@@ -82,3 +82,31 @@ func (b *Broker) SubscribeConversation(conversationID string) chan *models.Event
 func (b *Broker) UnsubscribeConversation(conversationID string, ch chan *models.Event) {
 	b.Unsubscribe("conv:"+conversationID, ch)
 }
+
+// SubscribeGlobal returns a channel that receives events for a global topic
+// (e.g. "agents"). Unlike Subscribe, the topic key is used directly — not
+// prefixed with a task ID. Call UnsubscribeGlobal when done.
+func (b *Broker) SubscribeGlobal(topic string) chan *models.Event {
+	return b.Subscribe(topic)
+}
+
+// UnsubscribeGlobal removes a channel from a global topic and closes it.
+func (b *Broker) UnsubscribeGlobal(topic string, ch chan *models.Event) {
+	b.Unsubscribe(topic, ch)
+}
+
+// PublishGlobal sends an event to all subscribers of a global topic.
+// Unlike Publish, it does not route to task or conversation subscribers.
+// If a subscriber's channel is full, the event is dropped.
+func (b *Broker) PublishGlobal(topic string, event *models.Event) {
+	b.mu.RLock()
+	subs := b.subscribers[topic]
+	b.mu.RUnlock()
+
+	for _, ch := range subs {
+		select {
+		case ch <- event:
+		default:
+		}
+	}
+}
