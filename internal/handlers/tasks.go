@@ -110,12 +110,12 @@ func (h *TaskHandler) List(w http.ResponseWriter, r *http.Request) {
 	argN := 1
 
 	if statusFilter != "" {
-		conditions = append(conditions, fmt.Sprintf("status = $%d", argN))
+		conditions = append(conditions, fmt.Sprintf("t.status = $%d", argN))
 		args = append(args, statusFilter)
 		argN++
 	}
 	if search != "" {
-		conditions = append(conditions, fmt.Sprintf("(title ILIKE $%d OR description ILIKE $%d)", argN, argN))
+		conditions = append(conditions, fmt.Sprintf("(t.title ILIKE $%d OR t.description ILIKE $%d)", argN, argN))
 		args = append(args, "%"+search+"%")
 		argN++
 	}
@@ -127,18 +127,26 @@ func (h *TaskHandler) List(w http.ResponseWriter, r *http.Request) {
 
 	// Get total count.
 	var total int
-	countQuery := "SELECT COUNT(*) FROM tasks " + where
+	countQuery := "SELECT COUNT(*) FROM tasks t " + where
 	if err := h.DB.QueryRow(r.Context(), countQuery, args...).Scan(&total); err != nil {
 		jsonError(w, "count query failed", http.StatusInternalServerError)
 		return
 	}
 
-	// Get paginated results.
+	// Get paginated results with per-task subtask counts via LEFT JOIN + GROUP BY.
+	// This keeps the dashboard progress bar free of N+1 lookups.
 	query := fmt.Sprintf(
-		`SELECT id, title, description, status, created_by,
-			metadata, plan, result, error, replan_count, created_at, completed_at
-		 FROM tasks %s
-		 ORDER BY created_at DESC
+		`SELECT
+			t.id, t.title, t.description, t.status, t.created_by,
+			t.metadata, t.plan, t.result, t.error, t.replan_count,
+			t.created_at, t.completed_at,
+			COALESCE(COUNT(s.id), 0) AS total_subtasks,
+			COALESCE(SUM(CASE WHEN s.status = 'completed' THEN 1 ELSE 0 END), 0) AS completed_subtasks
+		 FROM tasks t
+		 LEFT JOIN subtasks s ON s.task_id = t.id
+		 %s
+		 GROUP BY t.id
+		 ORDER BY t.created_at DESC
 		 LIMIT $%d OFFSET $%d`,
 		where, argN, argN+1)
 	args = append(args, perPage, offset)
@@ -152,7 +160,7 @@ func (h *TaskHandler) List(w http.ResponseWriter, r *http.Request) {
 
 	tasks := make([]models.Task, 0)
 	for rows.Next() {
-		t, err := scanTask(rows.Scan)
+		t, err := scanTaskWithCounts(rows.Scan)
 		if err != nil {
 			jsonError(w, "scan failed", http.StatusInternalServerError)
 			return
@@ -346,6 +354,39 @@ func scanTask(scan func(dest ...any) error) (models.Task, error) {
 	err := scan(
 		&t.ID, &t.Title, &t.Description, &t.Status, &t.CreatedBy,
 		&metadata, &plan, &result, &taskError, &t.ReplanCount, &t.CreatedAt, &t.CompletedAt,
+	)
+	if err != nil {
+		return t, err
+	}
+
+	if metadata != nil {
+		t.Metadata = json.RawMessage(metadata)
+	}
+	if plan != nil {
+		t.Plan = json.RawMessage(plan)
+	}
+	if result != nil {
+		t.Result = json.RawMessage(result)
+	}
+	if taskError != nil {
+		t.Error = *taskError
+	}
+
+	return t, nil
+}
+
+// scanTaskWithCounts scans a task row with the two aggregate count columns
+// appended (total_subtasks, completed_subtasks). Used by TaskHandler.List so
+// the dashboard progress bar can render without N+1 queries.
+func scanTaskWithCounts(scan func(dest ...any) error) (models.Task, error) {
+	var t models.Task
+	var metadata, plan, result []byte
+	var taskError *string
+
+	err := scan(
+		&t.ID, &t.Title, &t.Description, &t.Status, &t.CreatedBy,
+		&metadata, &plan, &result, &taskError, &t.ReplanCount, &t.CreatedAt, &t.CompletedAt,
+		&t.TotalSubtasks, &t.CompletedSubtasks,
 	)
 	if err != nil {
 		return t, err

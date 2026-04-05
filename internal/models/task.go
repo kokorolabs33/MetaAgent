@@ -21,6 +21,9 @@ type Task struct {
 	ReplanCount     int             `json:"replan_count"`
 	CreatedAt       time.Time       `json:"created_at"`
 	CompletedAt     *time.Time      `json:"completed_at,omitempty"`
+
+	CompletedSubtasks int `json:"completed_subtasks"`
+	TotalSubtasks     int `json:"total_subtasks"`
 }
 
 type SubTask struct {

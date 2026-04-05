@@ -160,6 +160,8 @@ export const useConversationStore = create<ConversationStore>((set, get) => ({
         conversation_id: get().activeConversation?.id ?? "",
         replan_count: 0,
         source: (data.source as string) ?? "conversation",
+        completed_subtasks: 0,
+        total_subtasks: 0,
         created_at: event.created_at ?? new Date().toISOString(),
       };
       set((s) => {

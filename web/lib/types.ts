@@ -69,6 +69,8 @@ export interface Task {
   template_id?: string;
   template_version?: number;
   policy_applied?: string[];
+  completed_subtasks: number;
+  total_subtasks: number;
   created_at: string;
   completed_at?: string;
 }
