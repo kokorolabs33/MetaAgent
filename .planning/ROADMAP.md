@@ -77,7 +77,13 @@ Plans:
   2. User can filter tasks by status (pending/running/completed/failed) and search by title
   3. Four or more concurrent tasks display correctly without browser connection limit errors
   4. Clicking any task card navigates to the full task detail and conversation view
-**Plans**: TBD
+**Plans:** 3 plans
+
+Plans:
+- [ ] 04-01-PLAN.md — Backend: extended task list with subtask counts + multiplexed SSE endpoint
+- [ ] 04-02-PLAN.md — Frontend components: progress bar, dashboard card, empty states, filter bar
+- [ ] 04-03-PLAN.md — Integration: SSE helper + dashboard store + page wiring + human verification
+
 **UI hint**: yes
 
 ### Phase 5: Chat Intervention
