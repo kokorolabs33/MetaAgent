@@ -49,7 +49,12 @@ Plans:
   2. DAG nodes display agent status inline without requiring a page refresh
   3. Status changes arrive via SSE push — no polling — and update within 2 seconds of the underlying event
   4. Stale agents (last health check older than threshold) render as "unknown" rather than falsely "online"
-**Plans**: TBD
+**Plans:** 2 plans
+
+Plans:
+- [ ] 02-01-PLAN.md — Backend agent status infrastructure (executor tracking, HealthChecker Broker, SSE endpoint)
+- [ ] 02-02-PLAN.md — Frontend AgentStatusDot component + store + SSE wiring across all surfaces
+
 **UI hint**: yes
 
 ### Phase 3: Templates
@@ -93,7 +98,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Foundation | 0/4 | Planning complete | - |
-| 2. Agent Status | 0/TBD | Not started | - |
+| 2. Agent Status | 0/2 | Planning complete | - |
 | 3. Templates | 0/TBD | Not started | - |
 | 4. Parallel Dashboard | 0/TBD | Not started | - |
 | 5. Chat Intervention | 0/TBD | Not started | - |
