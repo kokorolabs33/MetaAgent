@@ -27,7 +27,7 @@ Developers can experience a complete A2A multi-agent collaboration flow — from
 ### Active
 
 - [ ] Fix frontend-backend interaction bugs and improve interaction smoothness
-- [ ] Agent status visualization (online/working/idle/offline indicators with real-time activity feedback)
+- ✓ Agent status visualization (online/working/idle/offline indicators with real-time activity feedback) — Validated in Phase 2: agent-status
 - [ ] Enhanced chat interaction — user can converse with and intervene on sub-agents during execution
 - [ ] Multi-task parallel view — dashboard showing multiple tasks executing simultaneously
 - [ ] Task templates and experience accumulation — save successful orchestration patterns for reuse and evolution
