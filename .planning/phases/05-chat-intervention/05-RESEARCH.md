@@ -89,20 +89,20 @@ MessageHandler.Send (existing)
   |-- For each mention:
   |     |-- Query subtask status for agent
   |     |-- If active (running/input_required):
-  |     |     |-- Publish "agent.typing" SSE event
-  |     |     |-- go SendAdvisory(bgCtx, ...)  // NEW METHOD
+  |     |     |-- go SendAdvisory(taskID, ...)  // NEW METHOD — no ctx param
   |     |-- If not active:
   |           |-- Return error in response (D-02)
   |
   v
-SendAdvisory (new, on DAGExecutor)
+SendAdvisory (new, on DAGExecutor — no ctx parameter, creates own background context)
   |-- Build context: user message + subtask description + previous output
-  |-- ctx = context.WithTimeout(context.Background(), 60s)
-  |-- A2AClient.SendMessage(ctx, ...) with advisory contextID
-  |-- If "working" state: pollUntilTerminal(ctx, ...) with 60s limit
-  |-- On success: publishMessage with advisory metadata
+  |-- advCtx = context.WithTimeout(context.Background(), 60s)
+  |-- Publish "agent.typing" via Broker-only (transient)
+  |-- A2AClient.SendMessage(advCtx, ...) with advisory contextID
+  |-- If "working" state: pollUntilTerminal(advCtx, ...) with 60s limit
+  |-- On success: publishAdvisoryMessage with advisory metadata
   |-- On failure: retry once, then publish error message
-  |-- Always: publish "agent.typing_stopped" SSE event
+  |-- Always (defer): publish "agent.typing_stopped" via Broker-only (transient)
 ```
 
 ### Critical Design Decision: SendAdvisory vs SendFollowUp
@@ -117,10 +117,11 @@ The existing `SendFollowUp` method (executor.go:792) **MUST NOT** be used for ad
 An advisory reply must NEVER change the subtask's status. The agent is still executing its original task; the advisory is a side conversation. Changing status would crash the executor's DAG loop.
 
 **Solution:** New `SendAdvisory` method that:
-1. Sends A2A message (reuses same `A2AClient.SendMessage`)
-2. Publishes response as a chat message with `metadata: {"advisory": true}`
-3. Never touches the subtasks table
-4. Uses independent context (D-16)
+1. Takes NO ctx parameter — creates its own `context.WithTimeout(context.Background(), 60s)` (D-16)
+2. Sends A2A message (reuses same `A2AClient.SendMessage`)
+3. Publishes response as a chat message with `metadata: {"advisory": true}`
+4. Never touches the subtasks table
+5. Publishes typing indicators via Broker-only (transient, not persisted)
 
 ### D-05 Reinterpretation
 
@@ -147,13 +148,14 @@ Store removes agent from typingAgents map
 ### Frontend: Autocomplete Enrichment Pattern
 
 ```
-GroupChat props: agents: { id, name }[] + subtasks: SubTask[]
+GroupChat props: agents: { id, name }[] + subtasks?: SubTask[]
   |
   v
 Derive agentWithStatus from subtasks:
-  - For each agent, find latest subtask
-  - status = "running" or "input_required" -> active
-  - else -> inactive (grayed out in dropdown)
+  - If subtasks is undefined or empty: show all agents, assume active (fallback)
+  - If subtasks loaded: for each agent, find latest subtask
+    - status = "running" or "input_required" -> active
+    - else -> inactive (grayed out in dropdown)
   |
   v
 AgentStatusDot next to agent name in dropdown
@@ -175,12 +177,20 @@ Messages table `metadata` column (JSONB, already exists) carries the advisory fl
 
 The frontend checks `message.metadata?.advisory === true` to render the visual distinction.
 
+### API Response Type for Advisory Errors
+
+The `POST /tasks/{id}/messages` endpoint returns two possible shapes:
+- **Happy path** (no advisory errors): `Message` object directly
+- **Advisory errors present**: `{ message: Message, advisory_errors: string[] }`
+
+The frontend uses a discriminated union type (`Message | SendMessageResponse`) with an `isSendMessageResponse` type guard to safely handle both cases without `as` casts.
+
 ### Recommended Project Structure Changes
 
 ```
 internal/
   executor/
-    executor.go           # Add SendAdvisory method
+    executor.go           # Add SendAdvisory method (no ctx param)
   handlers/
     messages.go           # Refactor routeToAgents for advisory routing
 web/
@@ -191,14 +201,17 @@ web/
       TypingIndicator.tsx  # NEW: reusable typing dots component
   lib/
     store.ts              # Add typingAgents state to TaskStore
+    api.ts                # Add SendMessageResponse type + isSendMessageResponse guard
     types.ts              # No changes needed (metadata already optional Record)
 ```
 
 ### Anti-Patterns to Avoid
 - **Modifying SendFollowUp:** Never add "advisory mode" flag to SendFollowUp. That method has correct behavior for input_required resolution. Separate methods with clear responsibilities.
 - **Shared A2A context:** Advisory must use `context.Background()` with its own timeout, never inherit from the executor's task context (D-16). If the task completes while advisory is in-flight, the advisory must still finish gracefully.
+- **Passing ctx to SendAdvisory:** The method creates its own background context. Callers launch it via `go executor.SendAdvisory(taskID, ...)` without passing ctx.
 - **Blocking the HTTP response on A2A call:** The advisory A2A call happens in a goroutine. The HTTP response to the user's message send returns immediately with the saved message. SSE delivers the response asynchronously.
 - **Storing advisory state in subtasks table:** Advisory is a chat-layer feature. The subtasks table tracks DAG execution. Never add advisory columns to subtasks.
+- **Using `as` casts for api response:** Use the `isSendMessageResponse` type guard instead of `as Record<string, unknown>` casts on the api.messages.send result.
 
 ## Don't Hand-Roll
 
@@ -206,7 +219,7 @@ web/
 |---------|-------------|-------------|-----|
 | Typing indicator animation | Custom CSS keyframes | Tailwind `animate-pulse` on dot elements | Consistent with AgentStatusDot working animation [VERIFIED: AgentStatusDot.tsx uses animate-pulse] |
 | A2A message sending | New HTTP client | Existing `a2a.Client.SendMessage` | Already handles JSON-RPC 2.0 envelope, error parsing, response normalization [VERIFIED: a2a/client.go] |
-| SSE event publishing | Direct WebSocket | Existing `EventStore.Save` + `Broker.Publish` pattern | Already handles persistence + live delivery + conversation routing [VERIFIED: events/store.go, events/broker.go] |
+| SSE event publishing | Direct WebSocket | Existing `Broker.Publish` for transient events | Typing indicators are ephemeral — use Broker-only, not EventStore+Broker [VERIFIED: events/broker.go] |
 | Message deduplication | Custom dedup logic | Existing store pattern (`s.messages.some(m => m.id === msgId)`) | Already handles optimistic updates vs SSE delivery [VERIFIED: store.ts:280] |
 | @mention parsing | New regex | Existing `mentionRe` (`<@([^|]+)\|[^>]+>`) | Already tested and working in both handlers [VERIFIED: messages.go:32, conversations.go:317] |
 
@@ -223,7 +236,7 @@ web/
 ### Pitfall 2: Context Cancellation Propagation
 **What goes wrong:** Advisory goroutine inherits the executor's task context. When the task completes or is cancelled, the advisory context is also cancelled, causing the A2A call to fail mid-flight. The in-flight A2A agent may be left in an inconsistent state.
 **Why it happens:** Using `ctx` from the executor instead of `context.Background()`.
-**How to avoid:** Per D-16, always create a fresh `context.WithTimeout(context.Background(), 60*time.Second)` for advisory calls. Never pass the executor's context.
+**How to avoid:** Per D-16, always create a fresh `context.WithTimeout(context.Background(), 60*time.Second)` for advisory calls. Never pass the executor's context. SendAdvisory takes NO ctx parameter — it creates its own internally.
 **Warning signs:** "context canceled" errors in advisory goroutine logs when tasks complete quickly.
 
 ### Pitfall 3: Race Between Advisory and Subtask Completion
@@ -250,6 +263,12 @@ web/
 **How to avoid:** The message should always be saved (it's a valid user message). The validation error should be returned as additional data in the response, and/or published as a system message in the chat. The frontend can show an inline error toast while still keeping the user's message visible.
 **Warning signs:** User's message with @mention to inactive agent vanishes after hitting send.
 
+### Pitfall 7: Empty Autocomplete When Subtasks Not Loaded
+**What goes wrong:** The @mention autocomplete dropdown is empty when subtasks have not loaded yet (subtasks prop is undefined).
+**Why it happens:** Filtering to `hasSubtask === true` when `subtasks` is undefined means `subtasks.filter(...)` returns `[]` for every agent, so `hasSubtask` is always false.
+**How to avoid:** When `subtasks` is undefined or empty, fall back to showing all agents without status filtering (`isActive: true, hasSubtask: true`). Only apply the hasSubtask filter when subtasks data is defined and non-empty.
+**Warning signs:** Autocomplete works on second page load but not on first, or appears empty until a subtask SSE event arrives.
+
 ## Code Examples
 
 ### Backend: SendAdvisory Method (Executor)
@@ -258,20 +277,21 @@ web/
 // Source: New method based on codebase patterns in executor.go
 // SendAdvisory sends an advisory message to an agent without modifying subtask status.
 // Used for @mention routing when a user sends an advisory message during task execution.
-func (e *DAGExecutor) SendAdvisory(ctx context.Context, taskID, subtaskID, agentID, content string) {
+// NOTE: No ctx parameter — creates its own background context per D-16.
+func (e *DAGExecutor) SendAdvisory(taskID, subtaskID, agentID, content string) {
     // Create isolated context with 60s timeout (D-14, D-16)
     advCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
     defer cancel()
 
-    // Publish typing indicator
-    e.publishEvent(advCtx, taskID, "", "agent.typing", "system", "", map[string]any{
+    // Publish typing indicator (transient — Broker-only, not EventStore)
+    e.publishTransientEvent(taskID, "agent.typing", map[string]any{
         "agent_id":   agentID,
         "agent_name": agentName, // resolved from DB
     })
 
     // Always clear typing indicator on exit
     defer func() {
-        e.publishEvent(context.Background(), taskID, "", "agent.typing_stopped", "system", "", map[string]any{
+        e.publishTransientEvent(taskID, "agent.typing_stopped", map[string]any{
             "agent_id": agentID,
         })
     }()
@@ -302,7 +322,7 @@ func (e *DAGExecutor) SendAdvisory(ctx context.Context, taskID, subtaskID, agent
         subtaskID).Scan(&a2aTaskID, &agentEndpoint)
     if err != nil {
         log.Printf("advisory: load subtask %s: %v", subtaskID, err)
-        e.publishAdvisoryError(advCtx, taskID, agentID, "Could not reach the agent")
+        e.publishAdvisoryError(advCtx, taskID, agentID, agentName, "Could not reach the agent")
         return
     }
 
@@ -314,7 +334,7 @@ func (e *DAGExecutor) SendAdvisory(ctx context.Context, taskID, subtaskID, agent
         // Retry once (D-14)
         result, err = e.A2AClient.SendMessage(advCtx, agentEndpoint, taskID, a2aTaskID, parts)
         if err != nil {
-            e.publishAdvisoryError(advCtx, taskID, agentID, "Agent did not respond")
+            e.publishAdvisoryError(advCtx, taskID, agentID, agentName, "did not respond to the advisory message")
             return
         }
     }
@@ -327,9 +347,9 @@ func (e *DAGExecutor) SendAdvisory(ctx context.Context, taskID, subtaskID, agent
     // Publish advisory response as chat message (NOT subtask status change)
     if result.State == "completed" && len(result.Artifacts) > 0 {
         // Save message with advisory metadata
-        e.publishAdvisoryMessage(advCtx, taskID, agentID, agentName, string(result.Artifacts), subtaskID)
+        e.publishAdvisoryMessage(advCtx, taskID, agentID, agentName, result.Artifacts, subtaskID)
     } else if result.State == "failed" {
-        e.publishAdvisoryError(advCtx, taskID, agentID, "Agent encountered an error")
+        e.publishAdvisoryError(advCtx, taskID, agentID, agentName, "encountered an error processing the advisory")
     }
 }
 ```
@@ -338,7 +358,7 @@ func (e *DAGExecutor) SendAdvisory(ctx context.Context, taskID, subtaskID, agent
 
 ```go
 // Source: Pattern from executor.go publishMessage, extended with metadata
-func (e *DAGExecutor) publishAdvisoryMessage(ctx context.Context, taskID, senderID, senderName, content, subtaskID string) {
+func (e *DAGExecutor) publishAdvisoryMessage(ctx context.Context, taskID, senderID, senderName string, artifacts json.RawMessage, subtaskID string) {
     msgID := uuid.New().String()
     now := time.Now()
 
@@ -369,7 +389,7 @@ func (e *DAGExecutor) publishAdvisoryMessage(ctx context.Context, taskID, sender
 }
 ```
 
-### Backend: Validation in routeToAgents
+### Backend: Validation in routeAdvisory
 
 ```go
 // Source: Refactor of messages.go:155 routeToAgents
@@ -397,8 +417,8 @@ func (h *MessageHandler) routeAdvisory(ctx context.Context, taskID string, menti
             continue
         }
 
-        // Route via advisory (D-05 pattern: detached goroutine + background context)
-        go h.Executor.SendAdvisory(context.Background(), taskID, subtaskID, agentID, content)
+        // Route via advisory (D-05 pattern: detached goroutine, SendAdvisory creates own background context)
+        go h.Executor.SendAdvisory(taskID, subtaskID, agentID, content)
     }
 
     return errors
@@ -459,14 +479,19 @@ export function TypingIndicator({ agentName }: TypingIndicatorProps) {
 
 ```tsx
 // Source: Extension of GroupChat.tsx filteredAgents
-// Derive agent status from subtasks
+// Derive agent status from subtasks — handle undefined subtasks gracefully
 const agentsWithStatus = useMemo(() => {
   return agents.map((agent) => {
-    const agentSubtasks = subtasks?.filter((st) => st.agent_id === agent.id) ?? [];
+    if (!subtasks || subtasks.length === 0) {
+      // Subtasks not loaded yet — show all agents, assume potentially active
+      return { ...agent, isActive: true, hasSubtask: true };
+    }
+    const agentSubtasks = subtasks.filter((st) => st.agent_id === agent.id);
+    const hasSubtask = agentSubtasks.length > 0;
     const isActive = agentSubtasks.some(
       (st) => st.status === "running" || st.status === "input_required"
     );
-    return { ...agent, isActive };
+    return { ...agent, isActive, hasSubtask };
   });
 }, [agents, subtasks]);
 
@@ -485,6 +510,27 @@ const agentsWithStatus = useMemo(() => {
 </button>
 ```
 
+### Frontend: API Type Guard for Advisory Errors
+
+```typescript
+// In web/lib/api.ts
+export interface SendMessageResponse {
+  message: Message;
+  advisory_errors: string[];
+}
+
+export function isSendMessageResponse(
+  result: Message | SendMessageResponse
+): result is SendMessageResponse {
+  return "advisory_errors" in result && "message" in result;
+}
+
+// In store.ts — use type guard instead of unsafe casts:
+const result = await api.messages.send(taskId, content);
+const msg = isSendMessageResponse(result) ? result.message : result;
+const advisoryErrors = isSendMessageResponse(result) ? result.advisory_errors : undefined;
+```
+
 ## State of the Art
 
 | Old Approach | Current Approach | When Changed | Impact |
@@ -492,6 +538,7 @@ const agentsWithStatus = useMemo(() => {
 | `routeToAgents` calls `SendFollowUp` directly | New `SendAdvisory` method for advisory, `SendFollowUp` unchanged for input_required | Phase 5 | Advisory messages no longer modify subtask status |
 | Autocomplete shows all agents equally | Autocomplete shows agent activity status with AgentStatusDot | Phase 5 | Users can see which agents are available for advisory |
 | No typing indicators | SSE-driven "Agent X is typing..." with auto-clear | Phase 5 | Users get feedback that advisory message was received |
+| api.messages.send returns `Message` only | Returns `Message | SendMessageResponse` with type guard | Phase 5 | Frontend handles advisory errors without unsafe casts |
 
 ## Assumptions Log
 
@@ -504,24 +551,29 @@ const agentsWithStatus = useMemo(() => {
 
 **A2 Verification:** The `messages` table has `metadata JSONB NOT NULL DEFAULT '{}'` (migration 001_foundation.sql:156). The `publishMessage` helper already writes to the metadata column. [VERIFIED: migration file] -- this assumption is confirmed, promoting to VERIFIED.
 
-**A4 Rationale:** Typing indicators are ephemeral UI state. They should be published via `Broker.Publish()` only (not `EventStore.Save()`) to avoid polluting the event replay. If a user reconnects during a typing indicator, they will simply not see it -- the response message will appear shortly after anyway. [ASSUMED -- needs planner confirmation on whether to use Broker-only or full EventStore+Broker]
+**A4 Resolution:** Typing indicators are ephemeral UI state. They are published via `Broker.Publish()` only (not `EventStore.Save()`) to avoid polluting the event replay. If a user reconnects during a typing indicator, they will simply not see it -- the response message will appear shortly after anyway. The `publishTransientEvent` method on DAGExecutor implements this Broker-only pattern. [RESOLVED: confirmed in plan, Broker-only approach adopted]
 
 ## Open Questions
 
-1. **A2A contextID for advisory messages**
+1. **A2A contextID for advisory messages** (RESOLVED)
    - What we know: `SendFollowUp` uses the task's existing `a2a_task_id` as the A2A taskID parameter. Advisory should NOT share this context to avoid polluting the main conversation.
-   - What's unclear: Should advisory use a completely new contextID (fresh UUID), or reuse the taskID? The A2A protocol spec allows `contextId` to group related conversations.
-   - Recommendation: Use the taskID as contextID but generate a new A2A task (do not pass the existing `a2a_task_id`). This gives the agent conversation grouping context without interfering with the main subtask's A2A session.
+   - Resolution: Use the taskID as contextID but pass the existing `a2a_task_id` as the A2A task parameter. This gives the agent conversation grouping context without creating a brand new A2A task. Adopted in Plan 01 SendAdvisory implementation.
 
-2. **Subtask context truncation**
+2. **Subtask context truncation** (RESOLVED)
    - What we know: D-04 says to include "subtask's previous output" in the advisory context.
-   - What's unclear: How long can previous output be? Some agents produce multi-KB outputs.
-   - Recommendation: Truncate previous output at 2000 characters with "... (truncated)" suffix. This is Claude's Discretion per CONTEXT.md.
+   - Resolution: Truncate previous output at 2000 characters with "... (truncated)" suffix. This is Claude's Discretion per CONTEXT.md. Adopted in Plan 01 SendAdvisory implementation.
 
-3. **Concurrent advisory cap**
+3. **Concurrent advisory cap** (RESOLVED — deferred)
    - What we know: Multiple rapid @mentions could spawn many goroutines.
-   - What's unclear: Whether agents handle concurrent advisory messages well.
-   - Recommendation: Cap at 1 concurrent advisory per agent per task. If a second advisory arrives while one is in-flight, queue it or show "Agent is busy with a previous advisory" message. This is Claude's Discretion per CONTEXT.md.
+   - Resolution: No cap in Phase 5. The 60s context timeout prevents unbounded goroutine accumulation. Capping is Claude's Discretion per CONTEXT.md and can be added later if agents show issues with concurrent advisories. The current approach is simpler and adequate for the advisory-only use case.
+
+4. **SendAdvisory ctx parameter** (RESOLVED)
+   - What we know: D-16 says advisory must use separate context, not executor's.
+   - Resolution: SendAdvisory takes NO ctx parameter. It creates `context.WithTimeout(context.Background(), 60s)` internally. Callers invoke via `go executor.SendAdvisory(taskID, subtaskID, agentID, content)`. This makes D-16 isolation impossible to violate at the call site.
+
+5. **api.ts return type for advisory errors** (RESOLVED)
+   - What we know: Backend returns `Message` normally, `{ message: Message, advisory_errors: string[] }` when advisory errors exist.
+   - Resolution: api.ts exports `SendMessageResponse` interface and `isSendMessageResponse` type guard. `messages.send` returns `Promise<Message | SendMessageResponse>`. Store uses type guard instead of `as` casts.
 
 ## Security Domain
 
@@ -558,6 +610,7 @@ const agentsWithStatus = useMemo(() => {
 - `web/lib/store.ts` -- Zustand stores with SSE event handling [VERIFIED: codebase read]
 - `web/lib/sse.ts` -- SSE connection helpers [VERIFIED: codebase read]
 - `web/lib/types.ts` -- TypeScript interfaces matching Go models [VERIFIED: codebase read]
+- `web/lib/api.ts` -- API client with typed endpoints [VERIFIED: codebase read]
 - `internal/db/migrations/001_foundation.sql` -- Messages table schema with metadata JSONB column [VERIFIED: codebase read]
 
 ### Secondary (MEDIUM confidence)
@@ -568,7 +621,7 @@ const agentsWithStatus = useMemo(() => {
 **Confidence breakdown:**
 - Standard stack: HIGH -- all libraries already in use, no new dependencies
 - Architecture: HIGH -- based on thorough reading of existing codebase patterns, all extension points identified
-- Pitfalls: HIGH -- derived from actual code analysis (SendFollowUp status mutation, context propagation, TOCTOU race)
+- Pitfalls: HIGH -- derived from actual code analysis (SendFollowUp status mutation, context propagation, TOCTOU race, undefined subtasks)
 
 **Research date:** 2026-04-04
 **Valid until:** 2026-05-04 (stable -- all patterns based on existing codebase)
