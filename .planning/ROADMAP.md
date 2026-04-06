@@ -94,7 +94,13 @@ Plans:
   1. User can @mention a specific sub-agent in the chat input while a task is running and the message is delivered to that agent's active context
   2. The agent's response to the intervention appears in the conversation with correct sender attribution
   3. The intervention does not block or crash the executor — the task continues executing regardless of intervention timing
-**Plans**: TBD
+**Plans:** 2 plans
+
+Plans:
+- [ ] 05-01-PLAN.md — Backend: SendAdvisory method + routeAdvisory validation + typing indicator SSE events
+- [ ] 05-02-PLAN.md — Frontend: advisory reply label + TypingIndicator + status-enriched autocomplete + human verification
+
+**UI hint**: yes
 
 ## Progress
 
@@ -107,4 +113,4 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5
 | 2. Agent Status | 0/2 | Planning complete | - |
 | 3. Templates | 0/TBD | Not started | - |
 | 4. Parallel Dashboard | 0/TBD | Not started | - |
-| 5. Chat Intervention | 0/TBD | Not started | - |
+| 5. Chat Intervention | 0/2 | Planning complete | - |
