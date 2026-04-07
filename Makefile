@@ -74,6 +74,9 @@ db-reset:
 	dropdb taskhub 2>/dev/null || true
 	createdb taskhub
 
+seed-demo:
+	go run ./cmd/seeddemo
+
 # ─── Clean ───────────────────────────────────────────────────
 clean:
 	rm -f server
