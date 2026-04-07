@@ -162,8 +162,8 @@ Plans:
 **UI hint**: yes
 
 Plans:
-- [ ] 09-01-PLAN.md — Streaming OpenAI client, callback delivery, platform delta endpoint
-- [ ] 09-02-PLAN.md — Frontend streaming store, cursor component, ChatMessage integration, end-to-end verification
+- [x] 09-01-PLAN.md — Streaming OpenAI client, callback delivery, platform delta endpoint
+- [x] 09-02-PLAN.md — Frontend streaming store, cursor component, ChatMessage integration, end-to-end verification
 
 ### Phase 10: Inbound Webhooks
 **Goal**: External systems can trigger TaskHub task creation via authenticated webhook endpoints, with GitHub and Slack as built-in integrations
