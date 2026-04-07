@@ -29,6 +29,14 @@ func LocalSeed(ctx context.Context, pool *pgxpool.Pool) error {
 		return fmt.Errorf("seed user: %w", err)
 	}
 
+	if err := SeedTemplates(ctx, pool); err != nil {
+		return fmt.Errorf("seed templates: %w", err)
+	}
+
+	if err := SeedPolicies(ctx, pool); err != nil {
+		return fmt.Errorf("seed policies: %w", err)
+	}
+
 	return nil
 }
 
