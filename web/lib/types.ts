@@ -163,7 +163,15 @@ export interface DashboardData {
   avg_duration_sec: number;
   status_distribution: { status: string; count: number }[];
   daily_tasks: { date: string; count: number }[];
-  agent_usage: { name: string; task_count: number; completed: number; failed: number }[];
+  agent_usage: { id: string; name: string; task_count: number; completed: number; failed: number }[];
+}
+
+export interface AgentTaskDetail {
+  id: string;
+  task_title: string;
+  status: string;
+  duration_sec: number;
+  created_at: string;
 }
 
 // Timeline

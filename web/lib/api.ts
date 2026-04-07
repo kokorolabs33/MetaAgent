@@ -2,6 +2,7 @@ import type {
   Agent,
   AgentHealthOverview,
   AgentHealthDetail,
+  AgentTaskDetail,
   Conversation,
   ConversationListItem,
   DashboardData,
@@ -126,7 +127,20 @@ export const api = {
     delete: (id: string) => del(`/api/policies/${id}`),
   },
   analytics: {
-    dashboard: () => get<DashboardData>("/api/analytics/dashboard"),
+    dashboard: (params?: { range?: string; status?: string }) => {
+      const searchParams = new URLSearchParams();
+      if (params?.range) searchParams.set("range", params.range);
+      if (params?.status) searchParams.set("status", params.status);
+      const qs = searchParams.toString();
+      return get<DashboardData>(`/api/analytics/dashboard${qs ? `?${qs}` : ""}`);
+    },
+    agentTasks: (agentId: string, params?: { range?: string; status?: string }) => {
+      const searchParams = new URLSearchParams();
+      if (params?.range) searchParams.set("range", params.range);
+      if (params?.status) searchParams.set("status", params.status);
+      const qs = searchParams.toString();
+      return get<AgentTaskDetail[]>(`/api/analytics/agents/${agentId}/tasks${qs ? `?${qs}` : ""}`);
+    },
   },
   auditLogs: {
     list: (params?: { task_id?: string; agent_id?: string; type?: string; page?: number; per_page?: number }) => {

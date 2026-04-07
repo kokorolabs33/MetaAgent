@@ -219,6 +219,7 @@ func main() {
 
 		// Analytics
 		r.Get("/api/analytics/dashboard", analyticsH.GetDashboard)
+		r.Get("/api/analytics/agents/{id}/tasks", analyticsH.GetAgentTasks)
 
 		// Audit logs
 		r.Get("/api/audit-logs", auditLogH.List)
