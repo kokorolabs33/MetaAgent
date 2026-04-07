@@ -158,8 +158,12 @@ Plans:
   1. When an agent starts responding, tokens appear in the chat feed immediately and incrementally — the user sees a blinking cursor and text building character by character
   2. Streamed markdown renders progressively — tables and code blocks form correctly as tokens arrive, without layout jumps or broken partial renders
   3. Streaming does not drop tokens or corrupt messages — the final assembled message matches what a non-streaming response would have produced
-**Plans**: TBD
+**Plans**: 2 plans
 **UI hint**: yes
+
+Plans:
+- [ ] 09-01-PLAN.md — Streaming OpenAI client, callback delivery, platform delta endpoint
+- [ ] 09-02-PLAN.md — Frontend streaming store, cursor component, ChatMessage integration, end-to-end verification
 
 ### Phase 10: Inbound Webhooks
 **Goal**: External systems can trigger TaskHub task creation via authenticated webhook endpoints, with GitHub and Slack as built-in integrations
@@ -189,5 +193,5 @@ Phases execute in numeric order: 7 → 8 → 9 → 10
 | 6. Demo Readiness | v1.0 | 4/4 | Complete | 2026-04-07 |
 | 7. Agent Tool Use | v2.0 | 0/2 | Planned | - |
 | 8. Artifact Rendering | v2.0 | 0/2 | Planned | - |
-| 9. Streaming Output | v2.0 | 0/TBD | Not started | - |
+| 9. Streaming Output | v2.0 | 0/2 | Planned | - |
 | 10. Inbound Webhooks | v2.0 | 0/TBD | Not started | - |
