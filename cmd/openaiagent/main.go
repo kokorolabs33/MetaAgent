@@ -26,14 +26,15 @@ import (
 
 // taskState tracks in-flight tasks.
 type taskState struct {
-	mu          sync.Mutex
-	ID          string
-	ContextID   string
-	Status      string // "working", "completed", "failed", "canceled", "input-required"
-	Result      string
-	Error       string
-	CreatedAt   time.Time
-	CompletedAt time.Time
+	mu           sync.Mutex
+	ID           string
+	ContextID    string
+	Status       string // "working", "completed", "failed", "canceled", "input-required"
+	Result       string
+	Error        string
+	ToolProgress string // Current tool call status for polling visibility
+	CreatedAt    time.Time
+	CompletedAt  time.Time
 }
 
 var (
@@ -206,8 +207,18 @@ func handleSendMessage(_ context.Context, w http.ResponseWriter, req a2a.JSONRPC
 					var err error
 
 					if len(tools) > 0 {
+						onToolCall := func(toolName, args string) {
+							ts.mu.Lock()
+							ts.ToolProgress = fmt.Sprintf("tool_call_started:%s:%s", toolName, args)
+							ts.mu.Unlock()
+						}
+						onToolResult := func(toolName, summary string) {
+							ts.mu.Lock()
+							ts.ToolProgress = fmt.Sprintf("tool_call_completed:%s:%s", toolName, summary)
+							ts.mu.Unlock()
+						}
 						response, updatedHistory, err = client.ChatWithTools(
-							context.Background(), msgs, tools, nil, nil,
+							context.Background(), msgs, tools, onToolCall, onToolResult,
 						)
 					} else {
 						response, err = client.ChatWithHistory(context.Background(), msgs)
@@ -276,8 +287,18 @@ func handleSendMessage(_ context.Context, w http.ResponseWriter, req a2a.JSONRPC
 		var err error
 
 		if len(tools) > 0 {
+			onToolCall := func(toolName, args string) {
+				ts.mu.Lock()
+				ts.ToolProgress = fmt.Sprintf("tool_call_started:%s:%s", toolName, args)
+				ts.mu.Unlock()
+			}
+			onToolResult := func(toolName, summary string) {
+				ts.mu.Lock()
+				ts.ToolProgress = fmt.Sprintf("tool_call_completed:%s:%s", toolName, summary)
+				ts.mu.Unlock()
+			}
 			response, updatedHistory, err = client.ChatWithTools(
-				context.Background(), msgs, tools, nil, nil,
+				context.Background(), msgs, tools, onToolCall, onToolResult,
 			)
 		} else {
 			response, err = client.ChatWithHistory(context.Background(), msgs)
@@ -339,6 +360,13 @@ func handleGetTask(w http.ResponseWriter, req a2a.JSONRPCRequest) {
 	}
 
 	switch ts.Status {
+	case "working":
+		if ts.ToolProgress != "" {
+			task.Status.Message = &a2a.A2AMessage{
+				Role:  "agent",
+				Parts: []a2a.MessagePart{a2a.TextPart(ts.ToolProgress)},
+			}
+		}
 	case "completed":
 		if ts.Result != "" {
 			task.Artifacts = []a2a.Artifact{{

@@ -15,7 +15,7 @@ func TestPollUntilTerminal_AlreadyCompleted(t *testing.T) {
 	e := &DAGExecutor{A2AClient: a2a.NewClient()}
 	result := &a2a.SendResult{State: "completed", TaskID: "t1"}
 
-	got := e.pollUntilTerminal(context.Background(), "http://unused", result)
+	got := e.pollUntilTerminal(context.Background(), "http://unused", result, "", "", "")
 
 	if got.State != "completed" {
 		t.Errorf("state = %q, want completed", got.State)
@@ -26,7 +26,7 @@ func TestPollUntilTerminal_AlreadyFailed(t *testing.T) {
 	e := &DAGExecutor{A2AClient: a2a.NewClient()}
 	result := &a2a.SendResult{State: "failed", TaskID: "t1", Error: "something broke"}
 
-	got := e.pollUntilTerminal(context.Background(), "http://unused", result)
+	got := e.pollUntilTerminal(context.Background(), "http://unused", result, "", "", "")
 
 	if got.State != "failed" {
 		t.Errorf("state = %q, want failed", got.State)
@@ -40,7 +40,7 @@ func TestPollUntilTerminal_AlreadyInputRequired(t *testing.T) {
 	e := &DAGExecutor{A2AClient: a2a.NewClient()}
 	result := &a2a.SendResult{State: "input-required", TaskID: "t1"}
 
-	got := e.pollUntilTerminal(context.Background(), "http://unused", result)
+	got := e.pollUntilTerminal(context.Background(), "http://unused", result, "", "", "")
 
 	if got.State != "input-required" {
 		t.Errorf("state = %q, want input-required", got.State)
@@ -51,7 +51,7 @@ func TestPollUntilTerminal_AlreadyCanceled(t *testing.T) {
 	e := &DAGExecutor{A2AClient: a2a.NewClient()}
 	result := &a2a.SendResult{State: "canceled", TaskID: "t1"}
 
-	got := e.pollUntilTerminal(context.Background(), "http://unused", result)
+	got := e.pollUntilTerminal(context.Background(), "http://unused", result, "", "", "")
 
 	if got.State != "canceled" {
 		t.Errorf("state = %q, want canceled", got.State)
@@ -84,7 +84,7 @@ func TestPollUntilTerminal_WaitForCompletion(t *testing.T) {
 	e := &DAGExecutor{A2AClient: a2a.NewClient()}
 	result := &a2a.SendResult{State: "working", TaskID: "task-1"}
 
-	got := e.pollUntilTerminal(context.Background(), srv.URL, result)
+	got := e.pollUntilTerminal(context.Background(), srv.URL, result, "", "", "")
 
 	if got.State != "completed" {
 		t.Errorf("state = %q, want completed", got.State)
@@ -101,7 +101,7 @@ func TestPollUntilTerminal_ContextCanceled(t *testing.T) {
 	e := &DAGExecutor{A2AClient: a2a.NewClient()}
 	result := &a2a.SendResult{State: "working", TaskID: "t1"}
 
-	got := e.pollUntilTerminal(ctx, "http://unused", result)
+	got := e.pollUntilTerminal(ctx, "http://unused", result, "", "", "")
 
 	// Should return the original result since context is canceled
 	if got.State != "working" {
@@ -130,7 +130,7 @@ func TestPollUntilTerminal_SubmittedState(t *testing.T) {
 	e := &DAGExecutor{A2AClient: a2a.NewClient()}
 	result := &a2a.SendResult{State: "submitted", TaskID: "task-1"}
 
-	got := e.pollUntilTerminal(context.Background(), srv.URL, result)
+	got := e.pollUntilTerminal(context.Background(), srv.URL, result, "", "", "")
 
 	if got.State != "completed" {
 		t.Errorf("state = %q, want completed", got.State)
@@ -164,7 +164,7 @@ func TestPollUntilTerminal_TransientErrors(t *testing.T) {
 	e := &DAGExecutor{A2AClient: a2a.NewClient()}
 	result := &a2a.SendResult{State: "working", TaskID: "task-1"}
 
-	got := e.pollUntilTerminal(context.Background(), srv.URL, result)
+	got := e.pollUntilTerminal(context.Background(), srv.URL, result, "", "", "")
 
 	if got.State != "completed" {
 		t.Errorf("state = %q, want completed (after transient error)", got.State)

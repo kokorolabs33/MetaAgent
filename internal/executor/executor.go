@@ -622,7 +622,7 @@ func (e *DAGExecutor) runSubtask(
 	}
 
 	// Poll async agents until they reach a terminal state
-	result = e.pollUntilTerminal(ctx, agent.Endpoint, result)
+	result = e.pollUntilTerminal(ctx, agent.Endpoint, result, task.ID, st.ID, agent.ID)
 
 	// Handle result state
 	e.handleA2AResult(ctx, task, st, agent, result, allSubtasks, statusChangeCh)
@@ -747,7 +747,7 @@ func (e *DAGExecutor) handleA2AResult(
 // or actionable state (completed, failed, input-required, canceled). If the
 // result is already terminal it returns immediately. The poll uses a 2-second
 // interval with a 5-minute timeout.
-func (e *DAGExecutor) pollUntilTerminal(ctx context.Context, agentURL string, result *a2a.SendResult) *a2a.SendResult {
+func (e *DAGExecutor) pollUntilTerminal(ctx context.Context, agentURL string, result *a2a.SendResult, parentTaskID, subtaskID, agentID string) *a2a.SendResult {
 	if result.State != "working" && result.State != "submitted" {
 		return result
 	}
@@ -759,6 +759,8 @@ func (e *DAGExecutor) pollUntilTerminal(ctx context.Context, agentURL string, re
 	taskID := result.TaskID
 
 	log.Printf("executor: polling agent %s for task %s (state=%s)", agentURL, taskID, result.State)
+
+	var lastToolProgress string
 
 	for time.Now().Before(deadline) {
 		select {
@@ -774,6 +776,13 @@ func (e *DAGExecutor) pollUntilTerminal(ctx context.Context, agentURL string, re
 		}
 
 		result = pollResult
+
+		// Check for tool call progress markers during polling (D-07: real-time tool visibility)
+		if result.State == "working" && result.Message != "" && result.Message != lastToolProgress {
+			e.checkToolProgress(ctx, parentTaskID, subtaskID, agentID, result)
+			lastToolProgress = result.Message
+		}
+
 		if result.State != "working" && result.State != "submitted" {
 			log.Printf("executor: task %s reached state %q", taskID, result.State)
 			return result
@@ -785,6 +794,38 @@ func (e *DAGExecutor) pollUntilTerminal(ctx context.Context, agentURL string, re
 	result.State = "failed"
 	result.Error = fmt.Sprintf("agent task timed out after %v", pollTimeout)
 	return result
+}
+
+// checkToolProgress parses tool call progress markers from an A2A status message
+// and publishes corresponding SSE events (tool.call_started / tool.call_completed).
+// Per T-07-07: markers use a fixed prefix format that cannot be spoofed by regular text.
+func (e *DAGExecutor) checkToolProgress(ctx context.Context, taskID, subtaskID, agentID string, result *a2a.SendResult) {
+	if result.State != "working" || result.Message == "" {
+		return
+	}
+	msg := result.Message
+
+	if strings.HasPrefix(msg, "tool_call_started:") {
+		parts := strings.SplitN(msg[len("tool_call_started:"):], ":", 2)
+		if len(parts) == 2 {
+			toolName := parts[0]
+			toolArgs := parts[1]
+			e.publishEvent(ctx, taskID, subtaskID, "tool.call_started", "agent", agentID, map[string]any{
+				"tool_name": toolName,
+				"args":      toolArgs,
+			})
+		}
+	} else if strings.HasPrefix(msg, "tool_call_completed:") {
+		parts := strings.SplitN(msg[len("tool_call_completed:"):], ":", 2)
+		if len(parts) == 2 {
+			toolName := parts[0]
+			summary := parts[1]
+			e.publishEvent(ctx, taskID, subtaskID, "tool.call_completed", "agent", agentID, map[string]any{
+				"tool_name": toolName,
+				"summary":   summary,
+			})
+		}
+	}
 }
 
 // SendFollowUp sends a follow-up message to an agent for an existing subtask.
@@ -819,7 +860,7 @@ func (e *DAGExecutor) SendFollowUp(ctx context.Context, taskID, subtaskID, agent
 	}
 
 	// Poll async agents until they reach a terminal state
-	result = e.pollUntilTerminal(ctx, agentEndpoint, result)
+	result = e.pollUntilTerminal(ctx, agentEndpoint, result, taskID, subtaskID, agentID)
 
 	// Handle the result
 	switch result.State {
@@ -946,7 +987,7 @@ func (e *DAGExecutor) SendAdvisory(taskID, subtaskID, agentID, content string) {
 
 	// Poll if async
 	if result.State == "working" || result.State == "submitted" {
-		result = e.pollUntilTerminal(advCtx, agentEndpoint, result)
+		result = e.pollUntilTerminal(advCtx, agentEndpoint, result, taskID, subtaskID, agentID)
 	}
 
 	// Publish advisory response as chat message (NOT subtask status change)
