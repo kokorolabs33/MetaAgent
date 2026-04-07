@@ -874,6 +874,166 @@ func (e *DAGExecutor) SendFollowUp(ctx context.Context, taskID, subtaskID, agent
 	return nil
 }
 
+// SendAdvisory sends an advisory message to an agent without modifying subtask status.
+// Used for @mention routing when a user sends an advisory message during task execution.
+// NOTE: No ctx parameter — creates its own background context per D-16.
+func (e *DAGExecutor) SendAdvisory(taskID, subtaskID, agentID, content string) {
+	// Create isolated context with 60s timeout (D-14, D-16)
+	advCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	// Look up agent name for typing indicators and error messages
+	var agentName string
+	_ = e.DB.QueryRow(advCtx, `SELECT name FROM agents WHERE id = $1`, agentID).Scan(&agentName)
+	if agentName == "" {
+		agentName = agentID
+	}
+
+	// Publish transient typing indicator via Broker-only (D-09)
+	e.publishTransientEvent(taskID, "agent.typing", map[string]any{
+		"agent_id":   agentID,
+		"agent_name": agentName,
+	})
+
+	// Always clear typing indicator on exit (Pitfall 5 prevention)
+	defer e.publishTransientEvent(taskID, "agent.typing_stopped", map[string]any{
+		"agent_id": agentID,
+	})
+
+	// Build advisory context (D-04): user message + subtask description + previous output
+	var instruction string
+	var prevOutput string
+	_ = e.DB.QueryRow(advCtx,
+		`SELECT instruction, COALESCE(output::text, '') FROM subtasks WHERE id = $1`,
+		subtaskID).Scan(&instruction, &prevOutput)
+
+	advisoryContent := fmt.Sprintf("Advisory message from user: %s\n\nYour current task: %s", content, instruction)
+	if prevOutput != "" && prevOutput != "null" {
+		if len(prevOutput) > 2000 {
+			prevOutput = prevOutput[:2000] + "... (truncated)"
+		}
+		advisoryContent += fmt.Sprintf("\n\nYour previous output: %s", prevOutput)
+	}
+
+	// Load A2A task ID and endpoint
+	var a2aTaskID, agentEndpoint string
+	err := e.DB.QueryRow(advCtx,
+		`SELECT s.a2a_task_id, a.endpoint FROM subtasks s JOIN agents a ON a.id = s.agent_id WHERE s.id = $1`,
+		subtaskID).Scan(&a2aTaskID, &agentEndpoint)
+	if err != nil {
+		log.Printf("advisory: load subtask %s: %v", subtaskID, err)
+		e.publishAdvisoryError(advCtx, taskID, agentID, agentName, "could not reach the agent")
+		return
+	}
+
+	parts := []a2a.MessagePart{a2a.TextPart(advisoryContent)}
+
+	// Send A2A message — use taskID as contextID for advisory (separate from executor)
+	result, err := e.A2AClient.SendMessage(advCtx, agentEndpoint, taskID, a2aTaskID, parts)
+	if err != nil {
+		// Retry once (D-14)
+		result, err = e.A2AClient.SendMessage(advCtx, agentEndpoint, taskID, a2aTaskID, parts)
+		if err != nil {
+			log.Printf("advisory: a2a send to agent %s failed after retry: %v", agentID, err)
+			e.publishAdvisoryError(advCtx, taskID, agentID, agentName, "did not respond to the advisory message")
+			return
+		}
+	}
+
+	// Poll if async
+	if result.State == "working" || result.State == "submitted" {
+		result = e.pollUntilTerminal(advCtx, agentEndpoint, result)
+	}
+
+	// Publish advisory response as chat message (NOT subtask status change)
+	if result.State == "completed" && len(result.Artifacts) > 0 {
+		e.publishAdvisoryMessage(advCtx, taskID, agentID, agentName, result.Artifacts, subtaskID)
+	} else if result.State == "failed" {
+		e.publishAdvisoryError(advCtx, taskID, agentID, agentName, "encountered an error processing the advisory")
+	}
+}
+
+// publishAdvisoryMessage inserts an advisory response as a chat message with advisory metadata.
+func (e *DAGExecutor) publishAdvisoryMessage(ctx context.Context, taskID, senderID, senderName string, artifacts json.RawMessage, subtaskID string) {
+	// Extract text content from artifacts
+	content := string(artifacts)
+	if len(content) > 2 && content[0] == '"' && content[len(content)-1] == '"' {
+		var unquoted string
+		if json.Unmarshal(artifacts, &unquoted) == nil {
+			content = unquoted
+		}
+	}
+	if len(content) > 5000 {
+		content = content[:5000] + "... (truncated)"
+	}
+
+	msgID := uuid.New().String()
+	now := time.Now()
+
+	// Look up conversation_id for the task
+	var conversationID string
+	_ = e.DB.QueryRow(ctx, `SELECT COALESCE(conversation_id, '') FROM tasks WHERE id = $1`, taskID).Scan(&conversationID)
+
+	metadata, _ := json.Marshal(map[string]any{
+		"advisory":             true,
+		"advisory_for_subtask": subtaskID,
+	})
+
+	_, err := e.DB.Exec(ctx,
+		`INSERT INTO messages (id, task_id, conversation_id, sender_type, sender_id, sender_name, content, mentions, metadata, created_at)
+		 VALUES ($1, $2, $3, 'agent', $4, $5, $6, '{}', $7, $8)`,
+		msgID, taskID, conversationID, senderID, senderName, content, metadata, now)
+	if err != nil {
+		log.Printf("executor: insert advisory message: %v", err)
+		return
+	}
+
+	e.publishEvent(ctx, taskID, "", "message", "agent", senderID, map[string]any{
+		"message_id":  msgID,
+		"sender_name": senderName,
+		"sender_type": "agent",
+		"content":     content,
+		"metadata":    map[string]any{"advisory": true, "advisory_for_subtask": subtaskID},
+	})
+}
+
+// publishAdvisoryError publishes an advisory error as an inline system message.
+func (e *DAGExecutor) publishAdvisoryError(ctx context.Context, taskID, agentID, agentName, reason string) {
+	errorContent := fmt.Sprintf("%s %s", agentName, reason)
+	e.publishSystemMessage(ctx, taskID, errorContent)
+}
+
+// publishTransientEvent publishes an event via Broker only (NOT EventStore.Save).
+// Used for ephemeral events like typing indicators that should not be replayed on reconnect.
+func (e *DAGExecutor) publishTransientEvent(taskID, eventType string, data map[string]any) {
+	dataJSON, err := json.Marshal(data)
+	if err != nil {
+		log.Printf("executor: marshal transient event data: %v", err)
+		return
+	}
+
+	// Look up conversation_id for the task so event routes to conversation subscribers too
+	var conversationID string
+	if taskID != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = e.DB.QueryRow(ctx, `SELECT COALESCE(conversation_id, '') FROM tasks WHERE id = $1`, taskID).Scan(&conversationID)
+	}
+
+	evt := &models.Event{
+		ID:             uuid.NewString(),
+		TaskID:         taskID,
+		ConversationID: conversationID,
+		Type:           eventType,
+		ActorType:      "system",
+		Data:           dataJSON,
+		CreatedAt:      time.Now(),
+	}
+
+	// Broker-only — do NOT call EventStore.Save
+	e.Broker.Publish(evt)
+}
+
 // Cancel cancels a running task by calling its cancel function.
 func (e *DAGExecutor) Cancel(ctx context.Context, taskID string) error {
 	cancelFn, ok := e.cancels.Load(taskID)
