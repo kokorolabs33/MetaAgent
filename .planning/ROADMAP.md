@@ -1,24 +1,14 @@
 # Roadmap: TaskHub
 
-## Overview
+## Milestones
 
-TaskHub ships in five phases that transform a functional but rough codebase into a polished, demo-ready open-source A2A platform. Phase 1 fixes the foundation and ships GitHub-ready artifacts so the repo is credible on first clone. Phase 2 builds the shared agent status infrastructure that later phases depend on. Phase 3 delivers task templates in parallel — it shares no dependencies with Phase 2 and can proceed independently. Phase 4 adds the multi-task parallel dashboard, consuming the status infrastructure from Phase 2. Phase 5 completes the platform with the flagship sub-agent chat intervention feature, built last because it is the most complex and benefits from all prior stabilization.
+- ✅ **v1.0 Meta-Agent Foundation** - Phases 1-6 (shipped 2026-04-07)
+- 🚧 **v2.0 Wow Moment** - Phases 7-10 (in progress)
 
 ## Phases
 
-**Phase Numbering:**
-- Integer phases (1, 2, 3): Planned milestone work
-- Decimal phases (2.1, 2.2): Urgent insertions (marked with INSERTED)
-
-Decimal phases appear between their surrounding integers in numeric order.
-
-- [ ] **Phase 1: Foundation** - Fix all interaction bugs, SSE race, and ship GitHub-ready repo artifacts
-- [ ] **Phase 2: Agent Status** - Real-time online/working/idle/offline indicators with global SSE channel
-- [ ] **Phase 3: Templates** - Save orchestration patterns as reusable templates with experience accumulation
-- [ ] **Phase 4: Parallel Dashboard** - Multi-task parallel view with live DAG, status badges, and task filtering
-- [ ] **Phase 5: Chat Intervention** - User can message sub-agents mid-execution via @mention in chat
-
-## Phase Details
+<details>
+<summary>v1.0 Meta-Agent Foundation (Phases 1-6) - SHIPPED 2026-04-07</summary>
 
 ### Phase 1: Foundation
 **Goal**: A developer can clone the repo, run `docker compose up`, and see a fully working A2A orchestration demo with no broken interactions and no frozen DAG nodes
@@ -33,12 +23,10 @@ Decimal phases appear between their surrounding integers in numeric order.
 **Plans:** 4 plans
 
 Plans:
-- [ ] 01-01-PLAN.md — SSE race fix + Anthropic SDK replacement (backend core)
-- [ ] 01-02-PLAN.md — TraceTimeline replanning visibility (frontend)
-- [ ] 01-03-PLAN.md — Docker Compose one-click startup + agent seeding
-- [ ] 01-04-PLAN.md — README rewrite + demo verification checkpoint
-
-**UI hint**: yes
+- [x] 01-01-PLAN.md — SSE race fix + Anthropic SDK replacement (backend core)
+- [x] 01-02-PLAN.md — TraceTimeline replanning visibility (frontend)
+- [x] 01-03-PLAN.md — Docker Compose one-click startup + agent seeding
+- [x] 01-04-PLAN.md — README rewrite + demo verification checkpoint
 
 ### Phase 2: Agent Status
 **Goal**: Every agent surface in the UI shows real-time online/working/idle/offline state, and the global agent status SSE channel is stable for downstream phases to consume
@@ -55,8 +43,6 @@ Plans:
 - [x] 02-01-PLAN.md — Backend agent status infrastructure (executor tracking, HealthChecker Broker, SSE endpoint)
 - [x] 02-02-PLAN.md — Frontend AgentStatusDot component + store + SSE wiring across all surfaces
 
-**UI hint**: yes
-
 ### Phase 3: Templates
 **Goal**: Users can save successful task orchestration patterns as reusable templates and receive suggestions when creating new tasks similar to previous ones
 **Depends on**: Phase 1
@@ -65,8 +51,12 @@ Plans:
   1. User can save a completed task as a template, with variable placeholders extracted for context-specific fields
   2. Task creation flow suggests matching templates based on title similarity before the user submits
   3. Each template's usage count, success rate, and average duration are visible on the template detail view
-**Plans**: TBD
-**UI hint**: yes
+**Plans**: 3 plans
+
+Plans:
+- [x] 03-01-PLAN.md — Template backend + API
+- [x] 03-02-PLAN.md — Template frontend
+- [x] 03-03-PLAN.md — Template suggestions
 
 ### Phase 4: Parallel Dashboard
 **Goal**: Users can monitor multiple running tasks simultaneously from a single dashboard view with live status and one-click navigation to full task detail
@@ -80,11 +70,9 @@ Plans:
 **Plans:** 3 plans
 
 Plans:
-- [ ] 04-01-PLAN.md — Backend: extended task list with subtask counts + multiplexed SSE endpoint
-- [ ] 04-02-PLAN.md — Frontend components: progress bar, dashboard card, empty states, filter bar
-- [ ] 04-03-PLAN.md — Integration: SSE helper + dashboard store + page wiring + human verification
-
-**UI hint**: yes
+- [x] 04-01-PLAN.md — Backend: extended task list with subtask counts + multiplexed SSE endpoint
+- [x] 04-02-PLAN.md — Frontend components: progress bar, dashboard card, empty states, filter bar
+- [x] 04-03-PLAN.md — Integration: SSE helper + dashboard store + page wiring + human verification
 
 ### Phase 5: Chat Intervention
 **Goal**: Users can send advisory messages to specific sub-agents during active task execution, with responses appearing inline in the conversation stream
@@ -100,23 +88,7 @@ Plans:
 - [x] 05-01-PLAN.md — Backend: SendAdvisory method + routeAdvisory validation + typing indicator SSE events
 - [x] 05-02-PLAN.md — Frontend: advisory reply label + TypingIndicator + status-enriched autocomplete + human verification
 
-**UI hint**: yes
-
-## Progress
-
-**Execution Order:**
-Phases execute in numeric order: 1 → 2 → 3 → 4 → 5
-
-| Phase | Plans Complete | Status | Completed |
-|-------|----------------|--------|-----------|
-| 1. Foundation | 0/4 | Planning complete | - |
-| 2. Agent Status | 0/2 | Planning complete | - |
-| 3. Templates | 0/TBD | Not started | - |
-| 4. Parallel Dashboard | 0/TBD | Not started | - |
-| 5. Chat Intervention | 0/2 | Planning complete | - |
-
 ### Phase 6: Demo Readiness
-
 **Goal**: All manage pages are functional with real or seeded data, the platform can run with OpenAI key for task decomposition, and every page is demo-worthy
 **Depends on**: Phase 4, Phase 5
 **Requirements**: DEMO-01, DEMO-02, DEMO-03, DEMO-04, DEMO-05, DEMO-06
@@ -133,3 +105,81 @@ Plans:
 - [x] 06-02-PLAN.md — Seed templates, policies, and demo task data
 - [x] 06-03-PLAN.md — Analytics filters + per-agent drill-down
 - [x] 06-04-PLAN.md — Audit time range filter + template usage stats
+
+</details>
+
+### v2.0 Wow Moment (In Progress)
+
+**Milestone Goal:** Make agents do real work and produce visible results — transform the demo from "agents chatting" to "agents working with real data and producing actionable outputs"
+
+- [ ] **Phase 7: Agent Tool Use** - Function calling with web search so agents retrieve real data instead of hallucinating
+- [ ] **Phase 8: Artifact Rendering** - Rich typed cards for search results, code, and tables instead of raw text blobs
+- [ ] **Phase 9: Streaming Output** - Token-by-token agent replies so users watch agents think in real time
+- [ ] **Phase 10: Inbound Webhooks** - External events from GitHub and Slack trigger task creation automatically
+
+## Phase Details
+
+### Phase 7: Agent Tool Use
+**Goal**: Agents can call tools during task execution — starting with web search — and users see tool activity in real time in the chat feed
+**Depends on**: Phase 6 (v1.0 complete)
+**Requirements**: TOOL-01, TOOL-02, TOOL-03, TOOL-04
+**Success Criteria** (what must be TRUE):
+  1. An agent asked to research a current topic calls web search and returns results grounded in real-time data (not hallucinated from training knowledge)
+  2. The chat feed shows tool call events as they happen — user sees "Searching for: [query]..." before the agent's final response arrives
+  3. Different agent roles have different tool sets visible in their responses (e.g., Engineering agent can analyze code, Marketing agent searches the web)
+  4. Multi-turn tool use works correctly — an agent can call a tool, process results, call another tool, and produce a final response without conversation corruption
+**Plans**: TBD
+
+### Phase 8: Artifact Rendering
+**Goal**: Structured agent outputs render as rich, interactive UI cards instead of raw text — making tool results and agent work visually compelling
+**Depends on**: Phase 7
+**Requirements**: ARTF-01, ARTF-02, ARTF-03, ARTF-04
+**Success Criteria** (what must be TRUE):
+  1. Search results from web search tools render as clickable source cards with title, URL, and snippet — not as raw JSON or plain text
+  2. Code blocks in agent output have syntax highlighting with language detection, and tables render as formatted HTML tables (not ASCII)
+  3. Users can copy artifact content to clipboard or download it as a file with one click
+  4. All markdown in agent messages renders with GFM support (tables, task lists, strikethrough) and syntax-highlighted code blocks
+**Plans**: TBD
+**UI hint**: yes
+
+### Phase 9: Streaming Output
+**Goal**: Agent replies stream to the browser token-by-token so users watch agents think and write in real time instead of waiting for complete responses
+**Depends on**: Phase 7
+**Requirements**: STRM-01, STRM-02
+**Success Criteria** (what must be TRUE):
+  1. When an agent starts responding, tokens appear in the chat feed immediately and incrementally — the user sees a blinking cursor and text building character by character
+  2. Streamed markdown renders progressively — tables and code blocks form correctly as tokens arrive, without layout jumps or broken partial renders
+  3. Streaming does not drop tokens or corrupt messages — the final assembled message matches what a non-streaming response would have produced
+**Plans**: TBD
+**UI hint**: yes
+
+### Phase 10: Inbound Webhooks
+**Goal**: External systems can trigger TaskHub task creation via authenticated webhook endpoints, with GitHub and Slack as built-in integrations
+**Depends on**: Phase 6 (independent of Phases 7-9)
+**Requirements**: HOOK-01, HOOK-02, HOOK-03, HOOK-04
+**Success Criteria** (what must be TRUE):
+  1. A GitHub push or PR event with a valid HMAC signature creates a TaskHub task automatically — the task appears on the dashboard with the webhook payload as context
+  2. A Slack slash command or event subscription triggers task creation with the Slack message content as the task description
+  3. The webhook management page lets users create, edit, delete, and view webhook configurations with generated endpoint URLs and secrets
+  4. Sending the same webhook delivery twice (provider retry) does not create duplicate tasks — idempotency protection works
+**Plans**: TBD
+**UI hint**: yes
+
+## Progress
+
+**Execution Order:**
+Phases execute in numeric order: 7 → 8 → 9 → 10
+(Phase 10 is independent and could run parallel to 8/9 if desired)
+
+| Phase | Milestone | Plans Complete | Status | Completed |
+|-------|-----------|----------------|--------|-----------|
+| 1. Foundation | v1.0 | 4/4 | Complete | 2026-04-05 |
+| 2. Agent Status | v1.0 | 2/2 | Complete | 2026-04-05 |
+| 3. Templates | v1.0 | 3/3 | Complete | 2026-04-06 |
+| 4. Parallel Dashboard | v1.0 | 3/3 | Complete | 2026-04-06 |
+| 5. Chat Intervention | v1.0 | 2/2 | Complete | 2026-04-06 |
+| 6. Demo Readiness | v1.0 | 4/4 | Complete | 2026-04-07 |
+| 7. Agent Tool Use | v2.0 | 0/TBD | Not started | - |
+| 8. Artifact Rendering | v2.0 | 0/TBD | Not started | - |
+| 9. Streaming Output | v2.0 | 0/TBD | Not started | - |
+| 10. Inbound Webhooks | v2.0 | 0/TBD | Not started | - |

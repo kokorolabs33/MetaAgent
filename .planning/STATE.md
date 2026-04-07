@@ -2,12 +2,12 @@
 gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: wow-moment
-status: defining_requirements
-stopped_at: Milestone v2.0 started
-last_updated: "2026-04-07T04:00:00.000Z"
-last_activity: 2026-04-07
+status: roadmap_complete
+stopped_at: Roadmap created for v2.0
+last_updated: "2026-04-06T12:00:00.000Z"
+last_activity: 2026-04-06
 progress:
-  total_phases: 0
+  total_phases: 4
   completed_phases: 0
   total_plans: 0
   completed_plans: 0
@@ -18,17 +18,17 @@ progress:
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-04-04)
+See: .planning/PROJECT.md (updated 2026-04-07)
 
 **Core value:** Developers can experience a complete A2A multi-agent collaboration flow in a polished, open-source package they can clone and run
-**Current focus:** Milestone v2.0 — Wow Moment (defining requirements)
+**Current focus:** Milestone v2.0 — Wow Moment (roadmap complete, ready to plan Phase 7)
 
 ## Current Position
 
-Phase: Not started (defining requirements)
+Phase: 7 of 10 (Agent Tool Use) — not yet started
 Plan: —
-Status: Defining requirements
-Last activity: 2026-04-07 — Milestone v2.0 started
+Status: Ready to plan
+Last activity: 2026-04-06 — Roadmap created for v2.0 Wow Moment
 
 Progress: [░░░░░░░░░░] 0%
 
@@ -36,7 +36,7 @@ Progress: [░░░░░░░░░░] 0%
 
 **Velocity:**
 
-- Total plans completed: 6
+- Total plans completed: 6 (from v1.0)
 - Average duration: —
 - Total execution time: —
 
@@ -53,7 +53,6 @@ Progress: [░░░░░░░░░░] 0%
 - Trend: —
 
 *Updated after each plan completion*
-| Phase 02 P02 | 8min | 3 tasks | 11 files |
 
 ## Accumulated Context
 
@@ -62,10 +61,11 @@ Progress: [░░░░░░░░░░] 0%
 Decisions are logged in PROJECT.md Key Decisions table.
 Recent decisions affecting current work:
 
-- Roadmap: Advisory-only model for chat intervention (Phase 5) — avoids executor coordination complexity; directive mode deferred to v2
-- Roadmap: Phase 3 (Templates) is parallel-track to Phase 2 (Agent Status) — different backend subsystems, no shared dependency
-- Roadmap: HTTP/2 vs. multiplexed SSE architecture decision must be made as Phase 4 kickoff — do not start building without resolving this
-- [Phase 02]: AgentStatusDot uses Tailwind animate-pulse for working state -- no custom CSS; SSE managed per-page via useEffect lifecycle
+- v2.0 Roadmap: Tool use first (Phase 7) — produces structured data all other features depend on
+- v2.0 Roadmap: Artifact rendering (Phase 8) before streaming (Phase 9) — streamed artifacts should render correctly on arrival
+- v2.0 Roadmap: Webhooks (Phase 10) fully independent — can parallelize if desired
+- v2.0 Research: ChatMessage struct redesign required before any tool loop code (pitfall 1)
+- v2.0 Research: Streaming needs separate ephemeral channel, not existing broker (pitfall 3)
 
 ### Pending Todos
 
@@ -73,15 +73,18 @@ None yet.
 
 ### Roadmap Evolution
 
-- Phase 6 added: Demo Readiness — make all manage pages functional for demo
+- v1.0 complete (Phases 1-6)
+- v2.0 roadmap created: Phases 7-10 (Agent Tool Use, Artifact Rendering, Streaming Output, Inbound Webhooks)
 
 ### Blockers/Concerns
 
-- Phase 4 kickoff: HTTP/2 TLS vs. multiplexed `/api/events/stream?tasks=...` endpoint — must decide before Phase 4 begins; plain HTTP Docker Compose deployment cannot use HTTP/2 (RESOLVED — chose multiplexed SSE)
-- Phase 5 kickoff: A2A `input_required` state mechanics and contextId threading — needs spec review and design doc before writing InterventionRouter (RESOLVED — implemented SendAdvisory with isolated contextID)
+- Phase 7 kickoff: Tavily vs Brave search API — research recommends Tavily; validate response quality during Phase 7 implementation
+- Phase 8 kickoff: Artifact type contract must be defined before any UI work (design decision blocks implementation)
+- Phase 9 kickoff: Two-layer SSE architecture needs explicit design session before coding (A2A streaming client + broker relay)
+- Phase 8 setup: rehype-highlight + Next.js 16 App Router integration flagged MEDIUM confidence — needs build-time testing
 
 ## Session Continuity
 
-Last session: 2026-04-07T02:13:10.700Z
-Stopped at: Phase 6 UI-SPEC approved
-Resume file: .planning/phases/06-demo-readiness/06-UI-SPEC.md
+Last session: 2026-04-06
+Stopped at: Roadmap created for v2.0 Wow Moment milestone
+Resume file: None

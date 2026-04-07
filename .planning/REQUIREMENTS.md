@@ -134,27 +134,27 @@ Which phases cover which requirements. Updated during roadmap creation.
 | DEMO-04 | Phase 6 (v1.0) | Complete |
 | DEMO-05 | Phase 6 (v1.0) | Complete |
 | DEMO-06 | Phase 6 (v1.0) | Complete |
-| TOOL-01 | TBD | Pending |
-| TOOL-02 | TBD | Pending |
-| TOOL-03 | TBD | Pending |
-| TOOL-04 | TBD | Pending |
-| ARTF-01 | TBD | Pending |
-| ARTF-02 | TBD | Pending |
-| ARTF-03 | TBD | Pending |
-| ARTF-04 | TBD | Pending |
-| STRM-01 | TBD | Pending |
-| STRM-02 | TBD | Pending |
-| HOOK-01 | TBD | Pending |
-| HOOK-02 | TBD | Pending |
-| HOOK-03 | TBD | Pending |
-| HOOK-04 | TBD | Pending |
+| TOOL-01 | Phase 7 (v2.0) | Pending |
+| TOOL-02 | Phase 7 (v2.0) | Pending |
+| TOOL-03 | Phase 7 (v2.0) | Pending |
+| TOOL-04 | Phase 7 (v2.0) | Pending |
+| ARTF-01 | Phase 8 (v2.0) | Pending |
+| ARTF-02 | Phase 8 (v2.0) | Pending |
+| ARTF-03 | Phase 8 (v2.0) | Pending |
+| ARTF-04 | Phase 8 (v2.0) | Pending |
+| STRM-01 | Phase 9 (v2.0) | Pending |
+| STRM-02 | Phase 9 (v2.0) | Pending |
+| HOOK-01 | Phase 10 (v2.0) | Pending |
+| HOOK-02 | Phase 10 (v2.0) | Pending |
+| HOOK-03 | Phase 10 (v2.0) | Pending |
+| HOOK-04 | Phase 10 (v2.0) | Pending |
 
 **Coverage:**
 - v1 requirements: 21 total (all complete)
-- v2 requirements: 14 total
-- Mapped to phases: 21
-- Unmapped: 14 (pending roadmap creation)
+- v2 requirements: 14 total (all mapped)
+- Mapped to phases: 35/35
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-04-04*
-*Last updated: 2026-04-07 after milestone v2.0 start*
+*Last updated: 2026-04-06 after v2.0 roadmap creation*
