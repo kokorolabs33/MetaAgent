@@ -115,7 +115,7 @@ Plans:
 - [ ] **Phase 7: Agent Tool Use** - Function calling with web search so agents retrieve real data instead of hallucinating
 - [ ] **Phase 8: Artifact Rendering** - Rich typed cards for search results, code, and tables instead of raw text blobs
 - [ ] **Phase 9: Streaming Output** - Token-by-token agent replies so users watch agents think in real time
-- [ ] **Phase 10: Inbound Webhooks** - External events from GitHub and Slack trigger task creation automatically
+- [x] **Phase 10: Inbound Webhooks** - External events from GitHub and Slack trigger task creation automatically (completed 2026-04-07)
 
 ## Phase Details
 
@@ -178,8 +178,8 @@ Plans:
 **UI hint**: yes
 
 Plans:
-- [ ] 10-01-PLAN.md — Backend: migration, HMAC verification, GitHub/Slack parsers, ingestion handler, idempotency
-- [ ] 10-02-PLAN.md — Frontend: inbound webhook management UI with tabbed layout, CRUD, secret reveal, end-to-end verification
+- [x] 10-01-PLAN.md — Backend: migration, HMAC verification, GitHub/Slack parsers, ingestion handler, idempotency
+- [x] 10-02-PLAN.md — Frontend: inbound webhook management UI with tabbed layout, CRUD, secret reveal, end-to-end verification
 
 ## Progress
 
@@ -198,4 +198,4 @@ Phases execute in numeric order: 7 → 8 → 9 → 10
 | 7. Agent Tool Use | v2.0 | 0/2 | Planned | - |
 | 8. Artifact Rendering | v2.0 | 0/2 | Planned | - |
 | 9. Streaming Output | v2.0 | 0/2 | Planned | - |
-| 10. Inbound Webhooks | v2.0 | 0/2 | Planned | - |
+| 10. Inbound Webhooks | v2.0 | 2/2 | Complete    | 2026-04-07 |
