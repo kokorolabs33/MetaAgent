@@ -174,8 +174,12 @@ Plans:
   2. A Slack slash command or event subscription triggers task creation with the Slack message content as the task description
   3. The webhook management page lets users create, edit, delete, and view webhook configurations with generated endpoint URLs and secrets
   4. Sending the same webhook delivery twice (provider retry) does not create duplicate tasks — idempotency protection works
-**Plans**: TBD
+**Plans**: 2 plans
 **UI hint**: yes
+
+Plans:
+- [ ] 10-01-PLAN.md — Backend: migration, HMAC verification, GitHub/Slack parsers, ingestion handler, idempotency
+- [ ] 10-02-PLAN.md — Frontend: inbound webhook management UI with tabbed layout, CRUD, secret reveal, end-to-end verification
 
 ## Progress
 
@@ -194,4 +198,4 @@ Phases execute in numeric order: 7 → 8 → 9 → 10
 | 7. Agent Tool Use | v2.0 | 0/2 | Planned | - |
 | 8. Artifact Rendering | v2.0 | 0/2 | Planned | - |
 | 9. Streaming Output | v2.0 | 0/2 | Planned | - |
-| 10. Inbound Webhooks | v2.0 | 0/TBD | Not started | - |
+| 10. Inbound Webhooks | v2.0 | 0/2 | Planned | - |
