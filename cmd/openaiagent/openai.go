@@ -71,6 +71,11 @@ func (c *OpenAIClient) Chat(ctx context.Context, systemPrompt string, userMessag
 	return c.client.Chat(ctx, systemPrompt, userMessage)
 }
 
+// StreamDeltaHook is invoked with batched token deltas during streaming.
+// deltaText contains the accumulated text since the last call; done is true
+// when the stream finishes (deltaText may be empty for the final call).
+type StreamDeltaHook func(deltaText string, done bool)
+
 // ToolCallHook is invoked when the model requests a tool call.
 type ToolCallHook func(toolName, args string)
 

@@ -24,6 +24,13 @@ import (
 	"taskhub/internal/a2a"
 )
 
+// platformMeta holds platform-provided metadata for streaming delta delivery.
+type platformMeta struct {
+	ParentTaskID string `json:"parent_task_id"`
+	SubtaskID    string `json:"subtask_id"`
+	AgentID      string `json:"agent_id"`
+}
+
 // taskState tracks in-flight tasks.
 type taskState struct {
 	mu           sync.Mutex
@@ -33,6 +40,7 @@ type taskState struct {
 	Result       string
 	Error        string
 	ToolProgress string // Current tool call status for polling visibility
+	Platform     platformMeta
 	CreatedAt    time.Time
 	CompletedAt  time.Time
 }
@@ -42,6 +50,7 @@ var (
 	conversations sync.Map // contextID -> []chatMessage
 	client        *OpenAIClient
 	role          Role
+	platformURL   string // TASKHUB_PLATFORM_URL for streaming delta callbacks
 )
 
 // getHistory returns the conversation history for a contextID.
@@ -87,6 +96,11 @@ func main() {
 
 	client = NewOpenAIClient()
 
+	platformURL = os.Getenv("TASKHUB_PLATFORM_URL")
+	if platformURL == "" {
+		platformURL = "http://localhost:8080"
+	}
+
 	baseURL := fmt.Sprintf("http://localhost:%d", *port)
 
 	r := chi.NewRouter()
@@ -106,7 +120,7 @@ func main() {
 			URL:         baseURL,
 			Version:     "1.0.0",
 			Capabilities: a2a.CardCapability{
-				Streaming:         false,
+				Streaming:         true,
 				PushNotifications: false,
 			},
 			Skills:             skills,
@@ -164,14 +178,27 @@ func handleSendMessage(_ context.Context, w http.ResponseWriter, req a2a.JSONRPC
 		return
 	}
 
-	// Extract text from message parts
+	// Extract text and streaming metadata from message parts.
 	var text string
+	var pMeta platformMeta
 	for _, part := range params.Message.Parts {
 		if part.Text != "" {
 			if text != "" {
 				text += "\n"
 			}
 			text += part.Text
+		}
+		// Check for _streaming_meta in DataPart.
+		if part.Data != nil {
+			raw, err := json.Marshal(part.Data)
+			if err == nil {
+				var wrapper map[string]json.RawMessage
+				if json.Unmarshal(raw, &wrapper) == nil {
+					if metaRaw, ok := wrapper["_streaming_meta"]; ok {
+						_ = json.Unmarshal(metaRaw, &pMeta)
+					}
+				}
+			}
 		}
 	}
 
@@ -189,7 +216,12 @@ func handleSendMessage(_ context.Context, w http.ResponseWriter, req a2a.JSONRPC
 			if ts.Status == "input-required" {
 				// Reset to working for follow-up processing
 				ts.Status = "working"
+				// Update platform meta if provided in this follow-up.
+				if pMeta.ParentTaskID != "" {
+					ts.Platform = pMeta
+				}
 				followContextID := ts.ContextID
+				followPlatform := ts.Platform
 				ts.mu.Unlock()
 
 				// Process follow-up in background with history
@@ -201,28 +233,22 @@ func handleSendMessage(_ context.Context, w http.ResponseWriter, req a2a.JSONRPC
 					msgs = append(msgs, chatMessage{Role: "user", Content: text})
 
 					tools := GetToolsForRole(role.ID)
+					onDelta := makeDeltaHook(followPlatform)
 
-					var response string
-					var updatedHistory []chatMessage
-					var err error
-
-					if len(tools) > 0 {
-						onToolCall := func(toolName, args string) {
-							ts.mu.Lock()
-							ts.ToolProgress = fmt.Sprintf("tool_call_started:%s:%s", toolName, args)
-							ts.mu.Unlock()
-						}
-						onToolResult := func(toolName, summary string) {
-							ts.mu.Lock()
-							ts.ToolProgress = fmt.Sprintf("tool_call_completed:%s:%s", toolName, summary)
-							ts.mu.Unlock()
-						}
-						response, updatedHistory, err = client.ChatWithTools(
-							context.Background(), msgs, tools, onToolCall, onToolResult,
-						)
-					} else {
-						response, err = client.ChatWithHistory(context.Background(), msgs)
+					onToolCall := func(toolName, args string) {
+						ts.mu.Lock()
+						ts.ToolProgress = fmt.Sprintf("tool_call_started:%s:%s", toolName, args)
+						ts.mu.Unlock()
 					}
+					onToolResult := func(toolName, summary string) {
+						ts.mu.Lock()
+						ts.ToolProgress = fmt.Sprintf("tool_call_completed:%s:%s", toolName, summary)
+						ts.mu.Unlock()
+					}
+
+					response, updatedHistory, err := client.ChatWithToolsStream(
+						context.Background(), msgs, tools, onToolCall, onToolResult, onDelta,
+					)
 
 					ts.mu.Lock()
 					defer ts.mu.Unlock()
@@ -268,11 +294,12 @@ func handleSendMessage(_ context.Context, w http.ResponseWriter, req a2a.JSONRPC
 		ID:        taskID,
 		ContextID: contextID,
 		Status:    "working",
+		Platform:  pMeta,
 		CreatedAt: time.Now(),
 	}
 	tasks.Store(taskID, ts)
 
-	// Process in background goroutine with conversation history
+	// Process in background goroutine with conversation history (streaming).
 	go func() {
 		msgs := []chatMessage{
 			{Role: "system", Content: role.SystemPrompt},
@@ -281,28 +308,22 @@ func handleSendMessage(_ context.Context, w http.ResponseWriter, req a2a.JSONRPC
 		msgs = append(msgs, chatMessage{Role: "user", Content: text})
 
 		tools := GetToolsForRole(role.ID)
+		onDelta := makeDeltaHook(ts.Platform)
 
-		var response string
-		var updatedHistory []chatMessage
-		var err error
-
-		if len(tools) > 0 {
-			onToolCall := func(toolName, args string) {
-				ts.mu.Lock()
-				ts.ToolProgress = fmt.Sprintf("tool_call_started:%s:%s", toolName, args)
-				ts.mu.Unlock()
-			}
-			onToolResult := func(toolName, summary string) {
-				ts.mu.Lock()
-				ts.ToolProgress = fmt.Sprintf("tool_call_completed:%s:%s", toolName, summary)
-				ts.mu.Unlock()
-			}
-			response, updatedHistory, err = client.ChatWithTools(
-				context.Background(), msgs, tools, onToolCall, onToolResult,
-			)
-		} else {
-			response, err = client.ChatWithHistory(context.Background(), msgs)
+		onToolCall := func(toolName, args string) {
+			ts.mu.Lock()
+			ts.ToolProgress = fmt.Sprintf("tool_call_started:%s:%s", toolName, args)
+			ts.mu.Unlock()
 		}
+		onToolResult := func(toolName, summary string) {
+			ts.mu.Lock()
+			ts.ToolProgress = fmt.Sprintf("tool_call_completed:%s:%s", toolName, summary)
+			ts.mu.Unlock()
+		}
+
+		response, updatedHistory, err := client.ChatWithToolsStream(
+			context.Background(), msgs, tools, onToolCall, onToolResult, onDelta,
+		)
 
 		ts.mu.Lock()
 		defer ts.mu.Unlock()
@@ -314,7 +335,7 @@ func handleSendMessage(_ context.Context, w http.ResponseWriter, req a2a.JSONRPC
 			ts.Status = "completed"
 			ts.Result = response
 			ts.CompletedAt = time.Now()
-			// Store the full history including tool call/result messages
+			// Store the full history including tool call/result messages.
 			if updatedHistory != nil {
 				conversations.Store(contextID, updatedHistory)
 			} else {
@@ -415,6 +436,19 @@ func handleCancelTask(w http.ResponseWriter, req a2a.JSONRPCRequest) {
 		ContextID: ts.ContextID,
 		Status:    a2a.A2AStatus{State: "canceled"},
 	})
+}
+
+// makeDeltaHook returns a StreamDeltaHook that sends deltas to the platform server.
+// If the platform metadata is empty (backward compatibility), returns a no-op hook.
+func makeDeltaHook(pm platformMeta) StreamDeltaHook {
+	if pm.ParentTaskID == "" {
+		return nil
+	}
+	return func(deltaText string, done bool) {
+		if err := sendDelta(context.Background(), platformURL, pm.ParentTaskID, pm.SubtaskID, pm.AgentID, deltaText, done); err != nil {
+			log.Printf("streaming delta delivery failed: %v", err)
+		}
+	}
 }
 
 // scheduleCleanup removes a task and its conversation history after a grace period.
