@@ -141,6 +141,16 @@ export interface ToolCallEvent {
   created_at: string;
 }
 
+// Streaming Messages (Phase 9: Streaming Output)
+
+export interface StreamingMessage {
+  agent_id: string;
+  agent_name: string;
+  subtask_id: string;
+  content: string; // Accumulated text so far
+  started_at: string; // ISO timestamp of first delta
+}
+
 // Artifact Types (Phase 8: Artifact Rendering)
 
 export interface SearchResult {

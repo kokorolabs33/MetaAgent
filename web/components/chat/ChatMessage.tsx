@@ -7,6 +7,7 @@ import rehypeHighlight from "rehype-highlight";
 import { cn } from "@/lib/utils";
 import type { Message, Artifact } from "@/lib/types";
 import { ArtifactRenderer } from "@/components/artifacts/ArtifactRenderer";
+import { StreamingCursor } from "@/components/chat/StreamingCursor";
 
 interface ChatMessageProps {
   message: Message;
@@ -298,6 +299,45 @@ export function ChatMessage({ message }: ChatMessageProps) {
             artifacts={message.metadata.artifacts as Artifact[]}
           />
         )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Renders a streaming message (partial text with blinking cursor).
+ * Uses the same visual style as ChatMessage per D-07.
+ */
+interface StreamingChatMessageProps {
+  agentId: string;
+  agentName: string;
+  content: string; // Accumulated text so far
+}
+
+export function StreamingChatMessage({
+  agentName,
+  content,
+}: StreamingChatMessageProps) {
+  const initial = agentName ? agentName[0].toUpperCase() : "?";
+
+  return (
+    <div className="flex items-start gap-3 px-4 py-2">
+      <div className="flex size-7 shrink-0 items-center justify-center rounded-full bg-blue-600 text-xs font-bold text-white">
+        {initial}
+      </div>
+      <div className="min-w-0 flex-1">
+        <div className="flex items-baseline gap-2">
+          <span className="text-sm font-medium text-foreground">
+            {agentName}
+          </span>
+          <span className="rounded-full bg-green-500/10 px-2 py-0.5 text-[10px] font-medium text-green-400">
+            Streaming...
+          </span>
+        </div>
+        <div className="mt-0.5 max-w-full overflow-hidden text-sm leading-relaxed text-gray-300">
+          {content ? <MessageContent content={content} /> : null}
+          <StreamingCursor />
+        </div>
       </div>
     </div>
   );

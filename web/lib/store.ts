@@ -10,6 +10,7 @@ import type {
   Message,
   TaskEvent,
   ToolCallEvent,
+  StreamingMessage,
 } from "./types";
 import { connectSSE, connectAgentStatusSSE, connectMultiTaskSSE } from "./sse";
 import type { AgentActivityStatus } from "./types";
@@ -96,6 +97,7 @@ interface TaskStore {
   currentTask: TaskWithSubtasks | null;
   messages: Message[];
   typingAgents: Record<string, string>; // agent_id -> agent_name
+  streamingMessages: Record<string, StreamingMessage>; // agent_id -> streaming buffer
   toolCallEvents: ToolCallEvent[];
   isLoading: boolean;
   sseDisconnect: (() => void) | null;
@@ -118,6 +120,7 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
   currentTask: null,
   messages: [],
   typingAgents: {},
+  streamingMessages: {},
   toolCallEvents: [],
   isLoading: false,
   sseDisconnect: null,
@@ -315,6 +318,54 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
       return;
     }
 
+    // Handle streaming delta events (Phase 9: real-time token streaming)
+    if (event.type === "agent.streaming_delta") {
+      const data = event.data as Record<string, unknown>;
+      const deltaText = (data.delta_text as string) ?? "";
+      const done = (data.done as boolean) ?? false;
+      const agentId = (data.agent_id as string) ?? event.actor_id ?? "";
+
+      if (done) {
+        // Stream complete — remove from streamingMessages.
+        // The final complete message will arrive as a normal "message" event.
+        set((s) => {
+          const { [agentId]: _, ...rest } = s.streamingMessages;
+          return { streamingMessages: rest };
+        });
+        return;
+      }
+
+      // Append delta to accumulated content
+      set((s) => {
+        const existing = s.streamingMessages[agentId];
+        const updated: StreamingMessage = existing
+          ? { ...existing, content: existing.content + deltaText }
+          : {
+              agent_id: agentId,
+              agent_name: agentId, // Resolved in component layer via agent store
+              subtask_id: event.subtask_id ?? "",
+              content: deltaText,
+              started_at: new Date().toISOString(),
+            };
+
+        return {
+          streamingMessages: { ...s.streamingMessages, [agentId]: updated },
+        };
+      });
+
+      // Auto-clear safety timeout (60s) in case done event is lost (T-09-07 mitigation)
+      setTimeout(() => {
+        set((s) => {
+          if (s.streamingMessages[agentId]) {
+            const { [agentId]: _, ...rest } = s.streamingMessages;
+            return { streamingMessages: rest };
+          }
+          return s;
+        });
+      }, 60000);
+      return;
+    }
+
     // Add messages from message events (deduplicate by message_id)
     if (event.type === "message") {
       const data = event.data as Record<string, unknown>;
@@ -340,6 +391,12 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
             metadata: data.metadata as Record<string, unknown> | undefined,
             created_at: (data.created_at as string) ?? event.created_at ?? new Date().toISOString(),
           };
+          // Belt-and-suspenders: clear any streaming buffer for this sender
+          const senderId = (data.sender_id as string) ?? "";
+          if (senderId && s.streamingMessages[senderId]) {
+            const { [senderId]: _, ...rest } = s.streamingMessages;
+            return { messages: [...s.messages, msg], streamingMessages: rest };
+          }
           return { messages: [...s.messages, msg] };
         });
       }

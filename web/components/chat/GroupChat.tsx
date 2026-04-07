@@ -9,12 +9,12 @@ import {
 } from "react";
 import { Send, AlertCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { ChatMessage } from "./ChatMessage";
+import { ChatMessage, StreamingChatMessage } from "./ChatMessage";
 import { ToolCallStatus } from "./ToolCallStatus";
 import { TypingIndicator } from "./TypingIndicator";
 import { AgentStatusDot } from "@/components/agent/AgentStatusDot";
 import { cn } from "@/lib/utils";
-import { useTaskStore } from "@/lib/store";
+import { useTaskStore, useAgentStore } from "@/lib/store";
 import type { Message, SubTask, ToolCallEvent } from "@/lib/types";
 
 interface GroupChatProps {
@@ -42,14 +42,21 @@ export function GroupChat({
 
   const sendMessage = useTaskStore((s) => s.sendMessage);
   const typingAgents = useTaskStore((s) => s.typingAgents);
+  const streamingMessages = useTaskStore((s) => s.streamingMessages);
   const toolCallEvents = useTaskStore((s) => s.toolCallEvents);
+  const allAgents = useAgentStore((s) => s.agents);
 
-  // Auto-scroll to bottom on new messages or tool call events
+  // Auto-scroll to bottom on new messages, tool call events, or streaming updates
+  const streamingCount = Object.keys(streamingMessages).length;
+  const streamingContentLength = Object.values(streamingMessages).reduce(
+    (acc, sm) => acc + sm.content.length,
+    0,
+  );
   useEffect(() => {
     if (feedRef.current) {
       feedRef.current.scrollTop = feedRef.current.scrollHeight;
     }
-  }, [messages.length, toolCallEvents.length]);
+  }, [messages.length, toolCallEvents.length, streamingCount, streamingContentLength]);
 
   // Check if any subtask is waiting for input
   const hasWaitingSubtask = useMemo(
@@ -257,6 +264,21 @@ export function GroupChat({
             ),
           )
         )}
+
+        {/* Streaming messages (Phase 9: real-time token display) */}
+        {Object.values(streamingMessages).map((sm) => {
+          // Resolve agent name from agent store (store only has agent_id)
+          const resolvedName =
+            allAgents.find((a) => a.id === sm.agent_id)?.name ?? sm.agent_name;
+          return (
+            <StreamingChatMessage
+              key={`streaming-${sm.agent_id}`}
+              agentId={sm.agent_id}
+              agentName={resolvedName}
+              content={sm.content}
+            />
+          );
+        })}
       </div>
 
       {/* Typing indicators (D-07) */}
