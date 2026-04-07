@@ -126,7 +126,7 @@ func main() {
 	})
 
 	addr := fmt.Sprintf(":%d", *port)
-	log.Printf("%s listening on %s (model: %s)", role.Name, addr, client.model)
+	log.Printf("%s listening on %s (model: %s)", role.Name, addr, client.client.Model())
 	if err := http.ListenAndServe(addr, r); err != nil {
 		log.Fatalf("listen: %v", err)
 	}
