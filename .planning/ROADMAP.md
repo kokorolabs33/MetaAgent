@@ -119,11 +119,17 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5
 
 **Goal**: All manage pages are functional with real or seeded data, the platform can run with OpenAI key for task decomposition, and every page is demo-worthy
 **Depends on**: Phase 4, Phase 5
-**Requirements**: TBD
+**Requirements**: DEMO-01, DEMO-02, DEMO-03, DEMO-04, DEMO-05, DEMO-06
 **Success Criteria** (what must be TRUE):
   1. Task decomposition works with OpenAI API key (not just Anthropic)
   2. /manage/templates shows seeded template data with usage stats
   3. /manage/analytics has per-agent drill-down with task assignments and time/status filters
   4. /manage/audit shows audit logs with filtering by time, agent, and event type
   5. /manage/settings/policies shows seeded policy data
-**Plans**: TBD
+**Plans:** 4 plans
+
+Plans:
+- [ ] 06-01-PLAN.md — OpenAI LLM client extraction + orchestrator replacement
+- [ ] 06-02-PLAN.md — Seed templates, policies, and demo task data
+- [ ] 06-03-PLAN.md — Analytics filters + per-agent drill-down
+- [ ] 06-04-PLAN.md — Audit time range filter + template usage stats
