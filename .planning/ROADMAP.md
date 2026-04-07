@@ -129,7 +129,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5
 **Plans:** 4 plans
 
 Plans:
-- [ ] 06-01-PLAN.md — OpenAI LLM client extraction + orchestrator replacement
-- [ ] 06-02-PLAN.md — Seed templates, policies, and demo task data
-- [ ] 06-03-PLAN.md — Analytics filters + per-agent drill-down
-- [ ] 06-04-PLAN.md — Audit time range filter + template usage stats
+- [x] 06-01-PLAN.md — OpenAI LLM client extraction + orchestrator replacement
+- [x] 06-02-PLAN.md — Seed templates, policies, and demo task data
+- [x] 06-03-PLAN.md — Analytics filters + per-agent drill-down
+- [x] 06-04-PLAN.md — Audit time range filter + template usage stats
