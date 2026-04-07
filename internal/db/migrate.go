@@ -29,6 +29,7 @@ func RunMigrations(ctx context.Context, pool *pgxpool.Pool) error {
 		"migrations/005_remove_org_add_templates.sql",
 		"migrations/006_webhooks.sql",
 		"migrations/007_conversations.sql",
+		"migrations/008_inbound_webhooks.sql",
 	}
 
 	for _, file := range files {
