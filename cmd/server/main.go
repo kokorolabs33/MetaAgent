@@ -19,6 +19,7 @@ import (
 	"taskhub/internal/events"
 	"taskhub/internal/executor"
 	"taskhub/internal/handlers"
+	"taskhub/internal/llm"
 	"taskhub/internal/models"
 	"taskhub/internal/orchestrator"
 	"taskhub/internal/policy"
@@ -31,6 +32,9 @@ func main() {
 	cfg := config.Load()
 
 	log.Printf("TaskHub — mode: %s", cfg.Mode)
+	if cfg.OpenAIAPIKey == "" {
+		log.Println("WARNING: OPENAI_API_KEY not set -- task orchestration will fail")
+	}
 
 	// Database
 	pool, err := db.Open(ctx, cfg.DatabaseURL)
@@ -67,7 +71,8 @@ func main() {
 	eventStore := &events.Store{DB: pool}
 	broker := events.NewBroker()
 	auditLogger := &audit.Logger{DB: pool}
-	orch := &orchestrator.Orchestrator{}
+	llmClient := llm.NewClient(cfg.OpenAIAPIKey)
+	orch := &orchestrator.Orchestrator{LLM: llmClient}
 	a2aClient := a2a.NewClient()
 	policyEngine := policy.NewEngine(pool)
 

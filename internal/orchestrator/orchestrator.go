@@ -5,15 +5,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os/exec"
 	"strings"
 
+	"taskhub/internal/llm"
 	"taskhub/internal/models"
 )
 
 // Orchestrator decomposes tasks into subtask DAGs using an LLM.
 type Orchestrator struct {
-	// Future: use Anthropic Go SDK. MVP: use claude CLI.
+	LLM *llm.Client
 }
 
 const planPrompt = `You are a task decomposition engine. Given a task and available agents, break the task into subtasks.
@@ -66,7 +66,7 @@ func (o *Orchestrator) Plan(ctx context.Context, task models.Task, agents []mode
 		userMsg += "\n" + templateSkeleton
 	}
 
-	response, err := callLLM(ctx, systemPrompt, userMsg)
+	response, err := callLLM(ctx, o.LLM, systemPrompt, userMsg)
 	if err != nil {
 		return nil, fmt.Errorf("plan llm call: %w", err)
 	}
@@ -100,7 +100,7 @@ func (o *Orchestrator) Replan(ctx context.Context, task models.Task, failed mode
 	agentDesc := buildAgentDescription(agents)
 	systemPrompt := fmt.Sprintf("You are a task replanning engine. Available agents:\n%s\nRespond with ONLY valid JSON.", agentDesc)
 
-	response, err := callLLM(ctx, systemPrompt, userMsg)
+	response, err := callLLM(ctx, o.LLM, systemPrompt, userMsg)
 	if err != nil {
 		return nil, fmt.Errorf("replan llm call: %w", err)
 	}
@@ -131,19 +131,13 @@ func buildAgentDescription(agents []models.Agent) string {
 	return sb.String()
 }
 
-// callLLM uses the claude CLI for MVP. Replace with Anthropic Go SDK later.
-func callLLM(ctx context.Context, systemPrompt, userMsg string) (string, error) {
-	cmd := exec.CommandContext(ctx, "claude", "--print", "--system-prompt", systemPrompt, "--output-format", "text", userMsg)
-	out, err := cmd.Output()
+// callLLM sends a chat request via the shared OpenAI client.
+func callLLM(ctx context.Context, client *llm.Client, systemPrompt, userMsg string) (string, error) {
+	response, err := client.Chat(ctx, systemPrompt, userMsg)
 	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			return "", fmt.Errorf("claude cli exited %d: %s", exitErr.ExitCode(), string(exitErr.Stderr))
-		}
-		return "", fmt.Errorf("claude cli: %w", err)
+		return "", fmt.Errorf("openai: %w", err)
 	}
-
-	result := stripMarkdownFences(strings.TrimSpace(string(out)))
-	return result, nil
+	return stripMarkdownFences(strings.TrimSpace(response)), nil
 }
 
 // IntentResult is the output of DetectIntent.
@@ -185,7 +179,7 @@ func (o *Orchestrator) DetectIntent(ctx context.Context, history []ChatMessage, 
 	}
 	sb.WriteString("\n[user] " + userMessage)
 
-	response, err := callLLM(ctx, systemPrompt, sb.String())
+	response, err := callLLM(ctx, o.LLM, systemPrompt, sb.String())
 	if err != nil {
 		return nil, fmt.Errorf("detect intent llm call: %w", err)
 	}
