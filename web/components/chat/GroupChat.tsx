@@ -10,6 +10,9 @@ import {
 import { Send, AlertCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ChatMessage } from "./ChatMessage";
+import { TypingIndicator } from "./TypingIndicator";
+import { AgentStatusDot } from "@/components/agent/AgentStatusDot";
+import { cn } from "@/lib/utils";
 import { useTaskStore } from "@/lib/store";
 import type { Message, SubTask } from "@/lib/types";
 
@@ -31,11 +34,13 @@ export function GroupChat({
   const [showMentions, setShowMentions] = useState(false);
   const [mentionFilter, setMentionFilter] = useState("");
   const [mentionIndex, setMentionIndex] = useState(0);
+  const [advisoryErrors, setAdvisoryErrors] = useState<string[]>([]);
 
   const feedRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
   const sendMessage = useTaskStore((s) => s.sendMessage);
+  const typingAgents = useTaskStore((s) => s.typingAgents);
 
   // Auto-scroll to bottom on new messages
   useEffect(() => {
@@ -50,12 +55,33 @@ export function GroupChat({
     [subtasks],
   );
 
-  // Filtered agents for @mention autocomplete
+  // Derive agent activity status from subtasks (D-10)
+  // When subtasks is undefined (not yet loaded), show all agents without status filtering
+  const agentsWithStatus = useMemo(() => {
+    return agents.map((agent) => {
+      if (!subtasks || subtasks.length === 0) {
+        // Subtasks not loaded yet — show all agents, assume potentially active
+        return { ...agent, isActive: true, hasSubtask: true };
+      }
+      const agentSubtasks = subtasks.filter((st) => st.agent_id === agent.id);
+      const hasSubtask = agentSubtasks.length > 0;
+      const isActive = agentSubtasks.some(
+        (st) => st.status === "running" || st.status === "input_required",
+      );
+      return { ...agent, isActive, hasSubtask };
+    });
+  }, [agents, subtasks]);
+
+  // Filtered agents for @mention autocomplete (D-13: extend, not replace)
+  // Only filter to participating agents when subtasks data is available
   const filteredAgents = useMemo(() => {
-    if (!mentionFilter) return agents;
+    const base = subtasks && subtasks.length > 0
+      ? agentsWithStatus.filter((a) => a.hasSubtask)
+      : agentsWithStatus; // Show all agents when subtasks not loaded
+    if (!mentionFilter) return base;
     const lower = mentionFilter.toLowerCase();
-    return agents.filter((a) => a.name.toLowerCase().includes(lower));
-  }, [agents, mentionFilter]);
+    return base.filter((a) => a.name.toLowerCase().includes(lower));
+  }, [agentsWithStatus, mentionFilter, subtasks]);
 
   const handleInputChange = useCallback(
     (e: React.ChangeEvent<HTMLTextAreaElement>) => {
@@ -82,7 +108,15 @@ export function GroupChat({
   const [mentionMap, setMentionMap] = useState<Map<string, { id: string; name: string }>>(new Map());
 
   const insertMention = useCallback(
-    (agent: { id: string; name: string }) => {
+    (agent: { id: string; name: string; isActive?: boolean }) => {
+      // D-02: Block selection of inactive agents
+      if ("isActive" in agent && !agent.isActive) {
+        setAdvisoryErrors([`${agent.name} is not currently executing — advisory messages can only be sent to active agents`]);
+        setShowMentions(false);
+        setMentionFilter("");
+        return;
+      }
+
       const textarea = inputRef.current;
       if (!textarea) return;
 
@@ -125,10 +159,14 @@ export function GroupChat({
     }
 
     setIsSending(true);
+    setAdvisoryErrors([]); // Clear previous errors
     try {
-      await sendMessage(taskId, content);
+      const errors = await sendMessage(taskId, content);
       setInput("");
       setMentionMap(new Map());
+      if (errors && errors.length > 0) {
+        setAdvisoryErrors(errors);
+      }
     } catch {
       // Error handling is managed by the store
     } finally {
@@ -199,6 +237,20 @@ export function GroupChat({
         )}
       </div>
 
+      {/* Typing indicators (D-07) */}
+      {Object.entries(typingAgents).map(([agentId, agentName]) => (
+        <TypingIndicator key={agentId} agentName={agentName} />
+      ))}
+
+      {/* Advisory errors (D-02) */}
+      {advisoryErrors.length > 0 && (
+        <div className="border-t border-red-500/20 bg-red-500/5 px-4 py-2">
+          {advisoryErrors.map((err, i) => (
+            <p key={i} className="text-xs text-red-400">{err}</p>
+          ))}
+        </div>
+      )}
+
       {/* Input area */}
       <div className="relative border-t border-border p-3">
         {/* @mention dropdown */}
@@ -208,20 +260,23 @@ export function GroupChat({
               <button
                 key={agent.id}
                 type="button"
-                className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors ${
+                className={cn(
+                  "flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors",
                   i === mentionIndex
                     ? "bg-secondary text-foreground"
-                    : "text-muted-foreground hover:bg-secondary/50"
-                }`}
+                    : "text-muted-foreground hover:bg-secondary/50",
+                  !agent.isActive && "opacity-50",
+                )}
                 onMouseDown={(e) => {
                   e.preventDefault();
                   insertMention(agent);
                 }}
               >
-                <div className="flex size-5 items-center justify-center rounded-full bg-blue-600 text-[10px] font-bold text-white">
-                  {agent.name[0]?.toUpperCase() ?? "?"}
-                </div>
+                <AgentStatusDot status={agent.isActive ? "working" : "idle"} size="sm" />
                 <span>{agent.name}</span>
+                {!agent.isActive && (
+                  <span className="text-[10px] text-muted-foreground">(not active)</span>
+                )}
               </button>
             ))}
           </div>

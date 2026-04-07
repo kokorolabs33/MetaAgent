@@ -94,6 +94,7 @@ interface TaskStore {
   totalPages: number;
   currentTask: TaskWithSubtasks | null;
   messages: Message[];
+  typingAgents: Record<string, string>; // agent_id -> agent_name
   isLoading: boolean;
   sseDisconnect: (() => void) | null;
 
@@ -101,7 +102,7 @@ interface TaskStore {
   createTask: (title: string, description: string, templateId?: string) => Promise<Task>;
   selectTask: (taskId: string) => Promise<void>;
   cancelTask: (taskId: string) => Promise<void>;
-  sendMessage: (taskId: string, content: string) => Promise<void>;
+  sendMessage: (taskId: string, content: string) => Promise<string[] | undefined>;
   connectSSE: (taskId: string) => void;
   disconnectSSE: () => void;
   handleEvent: (event: TaskEvent) => void;
@@ -114,6 +115,7 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
   totalPages: 0,
   currentTask: null,
   messages: [],
+  typingAgents: {},
   isLoading: false,
   sseDisconnect: null,
 
@@ -166,11 +168,18 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
     const result = await api.messages.send(taskId, content);
     // Handle response using type guard -- no unsafe casts needed
     const msg = isSendMessageResponse(result) ? result.message : result;
+    const advisoryErrors = isSendMessageResponse(result) ? result.advisory_errors : undefined;
+
     // Optimistically add — SSE dedup will skip if it arrives again
     set((s) => {
       if (s.messages.some((m) => m.id === msg.id)) return s;
       return { messages: [...s.messages, msg] };
     });
+
+    // Return errors for caller to display (D-02)
+    if (advisoryErrors && advisoryErrors.length > 0) {
+      return advisoryErrors;
+    }
   },
 
   connectSSE: (taskId) => {
@@ -294,9 +303,44 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
             sender_name: (data.sender_name as string) ?? "Unknown",
             content: data.content as string,
             mentions: (data.mentions as string[]) ?? [],
+            metadata: data.metadata as Record<string, unknown> | undefined,
             created_at: (data.created_at as string) ?? event.created_at ?? new Date().toISOString(),
           };
           return { messages: [...s.messages, msg] };
+        });
+      }
+    }
+
+    // Handle advisory typing indicators (D-07, D-09)
+    if (event.type === "agent.typing") {
+      const data = event.data as Record<string, unknown>;
+      const agentId = data.agent_id as string;
+      const agentName = data.agent_name as string;
+      if (agentId && agentName) {
+        set((s) => ({
+          typingAgents: { ...s.typingAgents, [agentId]: agentName },
+        }));
+        // Client-side safety timeout: auto-clear after 65s (slightly longer than backend 60s)
+        // Prevents stuck indicators if agent.typing_stopped event is lost (Pitfall 5)
+        setTimeout(() => {
+          set((s) => {
+            if (s.typingAgents[agentId]) {
+              const { [agentId]: _, ...rest } = s.typingAgents;
+              return { typingAgents: rest };
+            }
+            return s;
+          });
+        }, 65000);
+      }
+    }
+
+    if (event.type === "agent.typing_stopped") {
+      const data = event.data as Record<string, unknown>;
+      const agentId = data.agent_id as string;
+      if (agentId) {
+        set((s) => {
+          const { [agentId]: _, ...rest } = s.typingAgents;
+          return { typingAgents: rest };
         });
       }
     }
