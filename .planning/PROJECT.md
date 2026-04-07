@@ -31,12 +31,14 @@ Developers can experience a complete A2A multi-agent collaboration flow — from
 - ✓ Analytics per-agent drill-down with time/status filters — Validated in Phase 6
 - ✓ Audit log time range filtering — Validated in Phase 6
 
+- ✓ Agent tool use — OpenAI function calling with Tavily web search, per-role tool sets — Validated in Phase 7
+- ✓ Artifact rich rendering — typed artifact cards (search, code, table, data) with copy/download, react-markdown GFM upgrade — Validated in Phase 8
+- ✓ Streaming agent output — token-by-token streaming with progressive markdown and blinking cursor — Validated in Phase 9
+- ✓ Inbound webhooks — HMAC-SHA256 authenticated endpoints with GitHub/Slack parsers and idempotency — Validated in Phase 10
+
 ### Active
 
-- [ ] Agent tool use — OpenAI function calling with web search as first tool, agents do real work not just chat
-- [ ] Artifact rich rendering — agents produce structured outputs (tables, reports, diffs) as rich UI cards
-- [ ] Streaming agent output — real-time token streaming so users watch agents think and write
-- [ ] Inbound webhooks — trigger tasks from external events (Slack, GitHub, etc.)
+(No active requirements — next milestone not yet planned)
 
 ### Out of Scope
 
@@ -45,22 +47,22 @@ Developers can experience a complete A2A multi-agent collaboration flow — from
 - Mobile app or responsive mobile UI — desktop-first developer tool
 - Real-time video/voice communication between agents — text-based A2A protocol focus
 
-## Current Milestone: v2.0 Wow Moment
+## Shipped: v2.0 Wow Moment (2026-04-07)
 
-**Goal:** Make agents do real work and produce visible results — transform the demo from "agents chatting" to "agents working with real data and producing actionable outputs"
+**Delivered:** Agents do real work — tool calling with web search, rich artifact rendering, token-by-token streaming, and inbound webhooks from GitHub/Slack. Transformed the demo from "agents chatting" to "agents working with real data and producing actionable outputs."
 
-**Target features:**
-- Agent Tool Use — OpenAI function calling with web search as first tool
-- Artifact Rich Rendering — agents produce structured outputs (tables, reports, code diffs) rendered as rich cards
-- Streaming Agent Output — real-time token streaming so users watch agents think and write
-- Inbound Webhooks — trigger tasks from external events (Slack, GitHub, etc.)
+## Next Milestone
+
+Not yet planned. Run `/gsd-new-milestone` to start.
 
 ## Context
 
-- v1.0 shipped: foundation, agent status, parallel dashboard, chat intervention, demo readiness (6 phases complete)
-- A2A protocol ecosystem is still nascent with few reference implementations; TaskHub aims to fill this gap
-- Current agents are chat-only — no tool use, no structured outputs, no external data access
-- The demo needs a "wow moment" to differentiate from single-LLM chat experiences
+- v1.0 shipped: foundation, agent status, parallel dashboard, chat intervention, demo readiness (6 phases)
+- v2.0 shipped: agent tool use, artifact rendering, streaming output, inbound webhooks (4 phases, 8 plans)
+- 10 phases complete across 2 milestones, ~8200 lines added
+- Agents now call real tools (Tavily web search), produce structured outputs, stream token-by-token
+- External systems (GitHub, Slack) can trigger tasks via HMAC-authenticated webhooks
+- A2A protocol ecosystem is still nascent; TaskHub is a comprehensive reference implementation
 - Target audience is developers and technical community (GitHub open-source)
 - One-person-company philosophy: lean, focused, high-quality rather than feature-bloated
 
@@ -76,10 +78,15 @@ Developers can experience a complete A2A multi-agent collaboration flow — from
 
 | Decision | Rationale | Outcome |
 |----------|-----------|---------|
-| Chat-driven interaction model (like golutra) | Developers expect conversational UX; aligns with A2A protocol's message-passing nature | — Pending |
-| Parallel bug-fix + feature development | Both polish and new features needed for open-source readiness | — Pending |
-| Borrow golutra patterns (status viz, dispatch) | Proven UX patterns from sister project, saves design iteration | — Pending |
+| Chat-driven interaction model (like golutra) | Developers expect conversational UX; aligns with A2A protocol's message-passing nature | ✓ Good |
+| Parallel bug-fix + feature development | Both polish and new features needed for open-source readiness | ✓ Good |
+| Borrow golutra patterns (status viz, dispatch) | Proven UX patterns from sister project, saves design iteration | ✓ Good |
 | Keep existing agent registration flow | Current flow is functional, not worth reworking for v1 open-source release | ✓ Good |
+| Tavily API for web search (hand-rolled HTTP) | Free tier, simple REST API, no SDK dependency | ✓ Good — v2.0 |
+| Hardcoded tool registry (no DB) | Tools are code-level, not user-configured — simpler, faster | ✓ Good — v2.0 |
+| react-markdown + remark-gfm for all messages | Replaces hand-rolled markdown, consistent GFM rendering | ✓ Good — v2.0 |
+| Single-layer streaming (agent → platform → browser) | Simpler than full A2A streaming; sufficient for demo | ✓ Good — v2.0 |
+| HMAC-SHA256 with dual-secret rotation | Industry standard webhook auth with zero-downtime key rotation | ✓ Good — v2.0 |
 
 ## Evolution
 
@@ -99,4 +106,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-04-07 after milestone v2.0 start*
+*Last updated: 2026-04-07 after milestone v2.0 completion*
