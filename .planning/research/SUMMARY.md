@@ -1,17 +1,17 @@
 # Project Research Summary
 
-**Project:** TaskHub — A2A Meta-Agent Platform
-**Domain:** Open-source multi-agent orchestration platform (developer showcase)
-**Researched:** 2026-04-04
+**Project:** TaskHub v2.0 — Wow Moment Milestone
+**Domain:** A2A multi-agent platform — agent tool use, artifact rendering, streaming output, inbound webhooks
+**Researched:** 2026-04-06
 **Confidence:** HIGH
 
 ## Executive Summary
 
-TaskHub is an open-source A2A-protocol multi-agent orchestration platform targeting developers as its primary audience. The research confirms that the existing Go + Next.js + PostgreSQL + React Flow stack is sound and needs only minimal additions (shadcn Resizable for multi-task view, optionally @dnd-kit for template step reordering). All five milestone features — agent status visualization, enhanced chat interaction, multi-task parallel view, task templates with experience accumulation, and open-source readiness — can be delivered on the existing stack with no new backend dependencies and at most two new frontend packages. The A2A protocol (v1.0.0, Linux Foundation, March 2026) is well-served by the existing adapter layer; no SDK migration is needed.
+TaskHub v2.0 transforms the platform from a "agents chatting" demo into a "agents doing real work" demo. The milestone has four features: agent tool use (function calling via OpenAI SDK), rich artifact rendering (structured output as typed cards), streaming agent output (token-by-token delivery to the browser), and inbound webhooks (external events trigger tasks). Research across all four areas confirms these are well-understood patterns with clear implementation paths on the existing Go + Next.js + PostgreSQL stack. The single new backend dependency is the official OpenAI Go SDK (`github.com/openai/openai-go/v3@v3.30.0`); the frontend gains `remark-gfm` and `rehype-highlight` to replace the hand-rolled markdown renderer. Everything else — HMAC verification, streaming relay, artifact storage — uses existing Go stdlib and current infrastructure.
 
-The recommended build order follows a clear dependency chain. Agent status visualization comes first because it produces the global `agentStatusStore` and `/api/agents/stream` SSE endpoint that every other feature reuses. Template experience recording and open-source readiness are parallel tracks with no inter-dependencies. Multi-task parallel view builds on agent status components. Sub-agent direct chat is the most complex feature and should be scoped carefully — the research identifies a fundamental design decision (advisory vs. directive intervention model) that must be made before writing code to avoid a rewrite.
+The recommended approach is dependency-driven: build tool use first (it produces the structured data everything else depends on), then artifact rendering (makes tool output legible), then streaming (the "wow" interaction that watches a tool-using agent think in real time), then inbound webhooks (fully independent, adds an external trigger surface). Each phase has clean boundaries. Tool use lives entirely inside `cmd/openaiagent/` and `internal/llm/`. Artifacts are a frontend rendering concern with no protocol changes needed. Streaming coordinates across the A2A client, executor, and broker using new event types through existing infrastructure. Webhooks are a new independent handler. The existing broker, store handler, SSE infrastructure, orchestrator, policy engine, and auth layer are all unchanged.
 
-Three risks dominate. First, a subscribe-before-replay race in the SSE streaming layer can cause DAG nodes to freeze in "running" state — this must be fixed before adding more real-time status surfaces. Second, the multi-task parallel view will silently fail for 4+ concurrent tasks unless the team makes an explicit decision between HTTP/2 TLS and a multiplexed SSE endpoint. Third, the platform's current dependency on the `claude` CLI for LLM orchestration is a first-clone blocker for open-source adoption; a startup check and mock LLM mode are required before any public launch. Addressing these three in the first phase prevents compounding problems later.
+The primary risks are architectural, not library-selection risks. The three most dangerous failure modes are: (1) conversation history corruption when tool calls are added to the existing `ChatMessage` struct — this requires a struct redesign before any tool work proceeds; (2) token streaming events overwhelming the broker's 64-event channel buffer — this requires a separate ephemeral streaming channel that bypasses the event store entirely; and (3) prompt injection through webhook payloads — this requires HMAC verification plus content sanitization from day one. Each has a clear, confirmed prevention strategy from direct codebase analysis.
 
 ---
 
@@ -19,196 +19,186 @@ Three risks dominate. First, a subscribe-before-replay race in the SSE streaming
 
 ### Recommended Stack
 
-The existing stack requires no structural changes. The project already carries all visualization, state management, styling, and real-time streaming capabilities needed for the milestone features. React Flow v12's built-in `NodeStatusIndicator` eliminates a dependency for agent status animations; Tailwind v4's `animate-ping` handles status pulse indicators. Zustand v5's built-in `persist` middleware covers template draft storage. The only genuinely new dependency is shadcn's `resizable` component (backed by `react-resizable-panels`) for the multi-task dashboard split-pane layout.
+The existing stack (Go 1.26, Next.js 16, PostgreSQL, pgx, shadcn/ui, Zustand, SSE broker) requires no structural changes. Notably, `react-markdown@10.1.0` is already installed but never imported — the "upgrade" is activating it with plugin support, not adding a new dependency. The minimum additions are one backend package and two to three frontend packages.
 
-The A2A protocol v1.0.0 (released March 12, 2026, Linux Foundation, Apache 2.0) is directly supported by the existing adapter layer. The official Go SDK (`a2aproject/a2a-go`) is a convenience wrapper; replacing the custom adapter would add risk with no feature benefit this milestone.
+**Core technologies added:**
+- `github.com/openai/openai-go/v3` (v3.30.0): Official OpenAI Go SDK — replaces the 123-line hand-rolled HTTP client in `internal/llm/openai.go`. Required for function calling (tool definitions, tool call loop, argument accumulation) and streaming. The SDK's `ChatCompletionAccumulator` handles streaming plus tool call delta accumulation, which is the hardest part to implement correctly from scratch. Released 2026-03-25, requires Go 1.22+ (we have 1.26.1). HIGH confidence.
+- `remark-gfm` (^4.0.1): GitHub Flavored Markdown plugin for react-markdown — enables table, task list, and strikethrough rendering in agent output. Verified compatible with react-markdown 10.x. HIGH confidence.
+- `rehype-highlight` (^7.0.2): Syntax highlighting via lowlight/highlight.js — ~50KB bundle, 37 languages, integrates directly with react-markdown's rehype chain. Preferred over react-syntax-highlighter (deprecated, slow, security issues) and shiki (695KB+ bundle, WASM complexity). MEDIUM confidence for Next.js 16 App Router integration — needs build-time testing.
+- `highlight.js` (^11, conditional): CSS theme import may require explicit install if the build cannot resolve the import from rehype-highlight's transitive dependency.
 
-**New dependencies (additions only):**
-- `shadcn resizable` — multi-task dashboard panel layout — install via `pnpm dlx shadcn@latest add resizable`; let shadcn pin the react-resizable-panels version (v4 API breaking change noted, avoid direct install)
-- `@dnd-kit/core` + `@dnd-kit/sortable` v6.x — template step reordering — conditional on drag-to-reorder being in scope; verify React 19 compatibility before adding
-- `Zustand persist middleware` — template draft persistence — already bundled in Zustand v5.0.11
-
-**Ruled out:** Framer Motion (bundle cost, Tailwind sufficient), react-beautiful-dnd (abandoned, React 19 incompatible), @tanstack/react-query (would require migrating all existing fetching), OpenTelemetry (weeks of work, zero differentiation), Next.js Parallel Routes for multi-task view (architectural overhead not justified).
+**Explicitly rejected:** `langchain-go` or any agent framework (TaskHub is the framework), `gorilla/websocket` (SSE is simpler and working), `@tanstack/react-query` (would require migrating all existing data-fetching), OpenAI Responses API (Chat Completions is sufficient and avoids a second API style), `shiki`/`react-shiki` (bundle too large), `svix/svix-webhooks` (stdlib HMAC is 15 lines).
 
 ### Expected Features
 
-**Must have (table stakes) — unblocked by and unblocking all else:**
-- Frontend bug fixes — broken UI on a demo repo signals unmaintained; unblocks everything
-- One-click startup (Docker Compose + seeded demo agents) — the #1 open-source adoption factor
-- Agent status indicators (online/idle/working/offline) — every agent platform shows this; absence is conspicuous
-- README with hero demo GIF + quickstart — top agentic repos all have it; without it visitors bounce in 10s
-- Task trace/timeline view — developers immediately look for "what did each agent do?"; `TraceTimeline.tsx` stub exists
-- Cost/token display per task — LLM cost awareness is now hygiene; audit data already captured
+The current gap is precise: agents produce text via single-shot chat with no tool use, no structured artifacts, no streaming, and no external triggers. The "agents doing real work" claim requires closing all four gaps.
 
-**Should have (competitive differentiators):**
-- Multi-task parallel view — no open-source A2A platform has this; high visual demo impact
-- Adaptive replanning visibility — TaskHub already does replanning but it is invisible; mostly frontend work
-- A2A protocol dev panel (show JSON-RPC wire calls) — makes TaskHub the canonical learning resource for A2A
-- User-to-sub-agent direct chat during execution — no competitor does this; TaskHub's flagship differentiator
+**Must have (table stakes for a 2026 A2A demo):**
+- Agent tool use with web search — every multi-agent demo in 2026 shows agents retrieving live data; static-knowledge agents feel like chatbots
+- Tool execution visibility in real-time — showing "Searching for: Go error handling..." while the agent works is non-negotiable UX
+- Token-by-token streaming output — waiting 10-30 seconds for full responses feels broken
+- Typed artifact cards (search results, code blocks, tables) — structured output rendered as rich UI, not raw text blobs
+- Inbound webhook endpoint with HMAC verification — external events trigger tasks (GitHub PR, Slack slash command)
 
-**Defer (v2+):**
-- Template auto-match (part 2) — defer until templates are in active use
-- Visual DAG builder — n8n has 150k+ stars; competing is a years-long effort
-- OpenTelemetry / external observability integration — LangFuse already does this; link in README instead
-- Multi-tenancy, plugin system, agent marketplace, mobile-responsive UI — all premature for a showcase
+**Should have (differentiators for GitHub stars):**
+- Tool call trace in the DAG view — sub-nodes within agent nodes showing the full reasoning chain; no open-source platform visualizes this
+- Live search results preview as clickable source cards — user sees the same sources the agent sees before it reasons about them
+- Webhook template library (GitHub + Slack presets) — one-click setup demonstrating breadth
 
-**Dependency chain:** Bug-free interaction → one-click startup → README/demo → GitHub launch. These three ship together as a "GitHub readiness" batch; none is useful without the others.
+**Defer to later phases:**
+- Artifact diff view (requires versioned artifact storage not yet built)
+- Cross-agent artifact passing (high complexity, changes orchestrator prompt construction)
+- Streaming cost ticker (polish, not core demo value)
+- Agent tool catalog UI (metadata page; build after tools are stable)
+- MCP server support (muddies the A2A showcase story)
+- A2UI protocol integration (nascent, Google-specific, large scope)
+- File upload/binary artifact hosting (S3/MinIO complexity, out of scope)
+
+**Critical path note:** Tool use must come first. It is the foundation for both streaming (streaming a tool-using agent is the compelling demo) and artifacts (tools produce the structured data worth rendering as cards). Inbound webhooks are independent and can be built in parallel or last.
 
 ### Architecture Approach
 
-The milestone extends the existing event-driven architecture without restructuring it. Four new components are added: (1) an `AgentActivityTracker` goroutine that derives working/idle status from live subtask counts and publishes to a new "agents" broker topic; (2) an `InterventionRouter` service inside the conversation handler that routes @mentions to the correct A2A agent contextId during active task execution; (3) a `parallelTaskStore` Zustand store managing N concurrent SSE connections for the multi-task dashboard; and (4) a `TemplateMatcher` that scores template suggestions via keyword overlap (no LLM) at task creation time. All four integrate through the existing broker/SSE/Zustand pattern — no new transport layer is introduced.
+The four features are layered, not tangled. Each has clean integration boundaries with the existing system. The existing broker, event store, SSE stream handler, orchestrator, policy engine, and auth layer require zero changes.
 
-**Major components:**
-1. **Agent Activity Status Layer** — derives four-state presence (online/idle/working/offline) from `agents.is_online` + live subtask count; broadcasts via new "agents" broker topic and `/api/agents/stream` SSE endpoint
-2. **InterventionRouter** — thin service extending `ConversationHandler`; resolves @mentions to agent IDs, finds active subtask contextId, dispatches to A2A client; returns 202 immediately (existing fire-and-forget pattern)
-3. **parallelTaskStore + TaskMonitorGrid** — Zustand store managing pinned task IDs, per-task SSE connections capped at 6, and live task state map; renders via `TaskMonitorCard` and `MiniDAG` components
-4. **TemplateMatcher** — keyword overlap scoring (TF-IDF-style, < 5ms, zero cost) at task creation time; closes the execution recording loop in the executor for the experience accumulation feedback cycle
+**Major new components:**
+1. **LLM tool client** (`internal/llm/openai.go` + `internal/llm/tools.go`) — SDK-based client with `ChatWithTools()` and `ChatStreaming()` methods; tool definition types, web search implementation, tool execution dispatcher
+2. **Agent tool execution** (`cmd/openaiagent/`) — tool registry per agent role, tool call loop, `tasks/sendSubscribe` SSE handler for streaming
+3. **A2A streaming layer** (`internal/a2a/streaming.go`) — SSE reader translating `TaskStatusUpdateEvent` / `TaskArtifactUpdateEvent` chunks into broker events; executor checks `AgentCard.capabilities.streaming` to choose polling vs streaming path
+4. **Artifact rendering** (`web/components/artifacts/`) — `ArtifactCard` dispatcher + `SearchResultsCard`, `CodeArtifact`, `TableArtifact` components; artifact type schema shared between Go and TypeScript
+5. **Inbound webhook ingestion** (`internal/handlers/webhook_ingestion.go`) — new handler outside auth middleware, HMAC verification, provider-specific parsers (GitHub, Slack, generic), idempotency via delivery ID
 
-**Key patterns to follow:**
-- Derive status from events; do not store derived state as a DB column (avoids dual-write problem)
-- Single global agent status SSE channel (`/api/agents/stream`) — not per-agent polling
-- Fan-out after persisting, not before — existing ordering must not be short-circuited
-- Per-conversation SSE (not per-task SSE) for chat — existing `conversationStore` unification must be maintained
-- HTTP handler returns 202 immediately for A2A dispatch; response via SSE (never block the handler)
+**Key patterns:**
+- Streaming token deltas flow through broker as ephemeral events (not persisted); only the final assembled message is stored
+- Artifact metadata lives in the existing `messages.metadata` JSONB column — no schema changes needed
+- Inbound webhooks ack immediately (202), process in background goroutine — avoids duplicate task creation from provider retries
+- Tool execution is internal to the agent binary; A2A protocol sees only final results
 
 ### Critical Pitfalls
 
-1. **SSE subscribe-before-replay race** (`internal/handlers/stream.go:53-74`) — subscribe to broker first, replay DB events second, deduplicate by event ID; must fix before adding more status surfaces or DAG nodes will freeze in "running" state
-2. **Multi-task view exhausts HTTP/1.1 SSE connection limit at 4+ tasks** — decide between HTTP/2 TLS (cleaner) or multiplexed `/api/events/stream?tasks=id1,id2` endpoint before building the feature; silently breaks in demos
-3. **Stale "online" indicator (up to 2-minute gap)** — add staleness threshold: if `now - last_health_check > threshold`, render as "unknown"; proactively mark agent offline when a subtask fails with unreachable error
-4. **Chat intervention race with executor** (`executor.go` vs `conversations.go`, no shared mutex) — decide advisory vs. directive model before writing code; advisory is safe with current architecture; directive requires adding an `input_queue` channel to subtask context
-5. **Template captures specific agent UUIDs and hard context, not reusable structure** — design variable extraction (`{{project_name}}` placeholders) before building the `StepEditor` UI; retrofitting requires schema migration
+1. **Tool call conversation history corruption** — The existing `llm.ChatMessage{Role, Content}` struct is incompatible with function calling. Tool call responses require a `ToolCalls []ToolCall` array on assistant messages (no `Content`), and tool results require `ToolCallID` linking back to the specific call. Building the tool loop on the existing struct causes silent conversation corruption and hallucinated results that are worse than clean failures. **Prevention:** Redesign `ChatMessage` before writing any tool loop code; add integration tests for the full tool round-trip. HIGH confidence from OpenAI community forums.
+
+2. **Streaming token delta accumulation failure** — When streaming is active and the model calls a tool, `tool_calls[i].function.arguments` arrives split across 10-50+ SSE chunks. Naive parsing of each chunk as complete JSON crashes. Failing to key the accumulator by `tool_calls[index]` mixes arguments from parallel calls. **Prevention:** Use the SDK's `ChatCompletionAccumulator` which handles this natively. If using raw streaming, maintain a `map[int]*ToolCallAccumulator`. Only parse accumulated JSON after `finish_reason == "tool_calls"`. HIGH confidence, most-reported streaming + function calling bug.
+
+3. **SSE broker buffer overflow under token streaming** — The existing broker uses 64-event buffered channels and silently drops events when full (direct codebase observation: `broker.go` line 25, line 61-65). Token streaming produces hundreds of events per subtask. Dropped token deltas are unrecoverable — they are not persisted to DB. **Prevention:** Do not route token deltas through the existing event broker. Use a separate ephemeral streaming channel. Persist only the final complete message as a standard `message` event. HIGH confidence from direct code analysis.
+
+4. **Prompt injection via webhook payloads** — Unsanitized webhook payload content flows to the LLM orchestrator. An attacker controls what the Master Agent plans and what sub-agents execute, including tool calls (OWASP LLM01:2025). **Prevention:** Sanitize all webhook-derived text (strip control characters, 500-char title limit, 5000-char description limit), wrap in `[EXTERNAL CONTENT START/END]` delimiters in the orchestrator prompt, require HMAC verification from day one. HIGH confidence.
+
+5. **Artifact type explosion without a schema contract** — Without a defined artifact schema, the frontend accumulates an unmaintainable switch statement checking heuristic patterns. The existing `a2a.MessagePart` struct uses `Data any` — completely untyped. Malformed artifacts crash the renderer. **Prevention:** Define a finite set of typed artifact schemas (`table`, `code`, `markdown`, `search_results`, `key_value`, `error`) with a `type` discriminator before building any rendering UI. Store schemas in `internal/a2a/artifacts.go` and `web/lib/artifact-types.ts`. HIGH confidence, most common mistake in multi-agent systems with heterogeneous output.
 
 ---
 
 ## Implications for Roadmap
 
-Based on combined research, the following phase structure is recommended. The ordering is driven by three forces: (a) the "GitHub readiness" dependency chain, (b) architectural dependencies between new components, and (c) the rule that pitfalls flagged as "must resolve before building" become phase preconditions.
+Based on research, the dependency graph drives a four-phase structure. Tool use unlocks all other features; artifact rendering makes tool output legible; streaming creates the "wow" interaction; webhooks add external trigger capability independently.
 
-### Phase 0: GitHub Readiness + Foundation Fixes
+### Phase 1: Agent Tool Use
 
-**Rationale:** Nothing else matters if the repo fails on first clone or has broken UI. This is the precondition for every other phase having demo value. Three of the thirteen pitfalls (SSE race, stale health indicator, Claude CLI dependency) must be patched here to prevent them from compounding across later phases.
+**Rationale:** Foundation for all other v2.0 features. Tool use transforms agents from static-knowledge chatbots into agents retrieving real data. Every other feature is more impressive when agents produce real tool-based output. Has no dependencies on other v2.0 features and unblocks Phases 2 and 3.
 
-**Delivers:** Repo that a developer can clone, `docker compose up`, and see a working A2A orchestration in under 2 minutes
+**Delivers:** Web search capability in all agent roles via Tavily API; real-time tool call visibility in chat feed (`ToolCallCard` component); complete tool call conversation history (valid multi-turn tool loops); tool execution events via SSE (`tool_call_started`, `tool_call_completed`); OpenAI Go SDK integration replacing hand-rolled HTTP client.
 
-**Addresses:** One-click startup, README/demo GIF, frontend bug fixes, cost/token display (data already exists), task trace/timeline view (`TraceTimeline.tsx` stub exists)
+**Addresses:** Table stakes features: agent tool use with web search, tool execution visibility.
 
-**Must avoid:**
-- Pitfall 9 (Claude CLI first-clone blocker) — add `--mock-llm` mode and startup check
-- Pitfall 1 (SSE subscribe-before-replay race) — fix before adding more event surfaces
-- Pitfall 3 (stale health indicator) — add staleness threshold to API response
+**Avoids:**
+- Pitfall 1 (conversation history corruption) — redesign `ChatMessage` struct as the very first task before any tool loop code
+- Pitfall 10 (parallel tool call races) — default `parallel_tool_calls: false`; collect all results before updating conversation history
+- Pitfall 7 (tool timeout cascading through DAG) — per-tool 15-second timeouts with graceful failure at the agent level, not the executor
+- Pitfall 12 (OpenAI strict schema restrictions) — all tool schema properties must be required, `additionalProperties: false`
 
-**Research flag:** Standard patterns; no deeper phase research needed. Docker Compose, README best practices, and SSE dedup are all well-documented.
+**Suggested sub-phases:**
+1. Redesign `llm.ChatMessage` struct + integrate OpenAI Go SDK (`go get github.com/openai/openai-go/v3@v3.30.0`)
+2. Implement web search tool (`internal/tools/websearch.go` with Tavily API) + tool execution dispatch in agent binary
+3. Tool visibility events: SSE `tool_call_started` / `tool_call_completed` + `ToolCallCard.tsx` frontend component
 
----
-
-### Phase 1: Agent Status Visualization
-
-**Rationale:** This phase produces shared infrastructure (`agentStatusStore`, `/api/agents/stream`, `AgentStatusDot`) that Phases 2 and 3 depend on directly. It also has the lowest risk of the four feature phases. Build it first, get the global status channel stable, then build on top of it.
-
-**Delivers:** Real-time online/idle/working/offline indicators on agent list, agent detail, and DAG nodes; global agent SSE channel serving all subsequent features
-
-**Addresses:** Agent status indicators (table stakes); `NodeStatusIndicator` from React Flow v12 (zero new dependency)
-
-**Implements:** Agent Activity Status Layer — extend broker with "agents" topic, add `AgentActivityTracker`, add `/api/agents/stream` SSE endpoint, add `agentStatusStore.ts` and `AgentStatusDot.tsx`
-
-**Must avoid:**
-- Pitfall 12 (undefined SSE event types) — define `agent.working`, `agent.idle`, `agent.offline` in `types.ts` before backend emitters
-- Pitfall 7 (broker channel drop under load) — increase buffer or add drop counter with forced reconnect
-
-**Research flag:** Well-documented patterns (SSE fanout, Zustand store, React Flow NodeStatusIndicator). No deeper research needed.
+**Research flag:** Well-documented patterns. OpenAI function calling is extensively documented. The SDK handles the hardest parts. The `ChatMessage` struct redesign is clearly specified in PITFALLS.md. No deeper research phase needed.
 
 ---
 
-### Phase 2: Task Templates + Experience Accumulation
+### Phase 2: Artifact Rendering
 
-**Rationale:** Parallel track to Phase 1 with no dependency on agent status infrastructure. Fixes an existing data gap (executor does not record `template_executions`) and adds template suggestion to task creation. Medium complexity, high strategic value for the "learning loop" differentiator.
+**Rationale:** Tool use produces structured data (search results, analysis tables, code). Without rich rendering, this data appears as raw JSON text and the "wow" is lost. Artifact rendering is predominantly frontend work, independent of streaming, and can proceed immediately after Phase 1 backend work completes. The schema definition sub-phase must come before any UI work.
 
-**Delivers:** "Save as template" from completed task, keyword-based template suggestion at task creation, execution history recording, evolution suggestions panel
+**Delivers:** Typed artifact schema contract (`internal/a2a/artifacts.go` + `web/lib/artifact-types.ts`); `ArtifactCard` dispatcher component; `SearchResultsCard`, `CodeArtifact`, `TableArtifact` renderers; upgraded markdown rendering via `react-markdown` + `remark-gfm` + `rehype-highlight` (replacing the 240-line hand-rolled renderer in `ChatMessage.tsx`); copy/download on artifact cards.
 
-**Addresses:** Task templates (differentiator — part 1: save + suggest); defers part 2 (auto-match improvement) to v2
+**Addresses:** Table stakes: artifact rendering. Differentiator: live search results preview as clickable source cards.
 
-**Implements:** TemplateMatcher, executor extension for `template_execution` recording, `TemplateSuggestionBar.tsx`, `TemplateEvolutionPanel.tsx`
+**Avoids:**
+- Pitfall 5 (artifact type explosion) — define schema contract as the first task of this phase before any UI is built
+- Pitfall 13 (XSS via agent output) — use react-markdown defaults, no raw HTML rendering, explicit block-list for `script`, `iframe`, `object` elements
+- Pitfall 14 (LLM abstraction leak) — keep artifact schema generic in shared types; OpenAI wire format stays inside `internal/llm/openai.go`
 
-**Must avoid:**
-- Pitfall 5 (template captures specific context) — design `{{variable}}` placeholder extraction at template creation time before building StepEditor UI
-- Pitfall 8 (silent template execution tracking failure) — fix `_ =` error discards in executor template recording paths; add integration test
-- Pitfall 11 (circular dependency in step editor) — add Kahn's algorithm cycle detection in template save handler
-- Pitfall 13 (prompt injection via template variables) — add max-length limits and input sanitization before variables reach the LLM prompt
+**Suggested sub-phases:**
+1. Define artifact schema contract (shared Go + TypeScript types with `type` discriminator)
+2. Agent prompt engineering for structured output + executor artifact metadata extraction (attach to `message.metadata`)
+3. Frontend artifact card components + react-markdown upgrade
 
-**Research flag:** Template variable extraction design may need a short research spike on the right parameterization UX pattern (placeholders vs. prompted variables). All other patterns are standard Go/PostgreSQL.
-
----
-
-### Phase 3: Multi-Task Parallel View
-
-**Rationale:** Depends on Phase 1 (`AgentStatusDot` used in `TaskMonitorCard`, `agentStatusStore` shared). Primarily frontend work — no new backend endpoints. High visual demo impact and direct differentiation from competitors. The SSE connection limit pitfall is an architecture decision that gates the entire feature.
-
-**Delivers:** Dashboard grid showing N active tasks with live mini-DAG, status badge, agent dots, and latest message; pin/unpin controls; click-through to full conversation view
-
-**Addresses:** Multi-task parallel view (differentiator); task filtering/search (can ship as simple filter buttons alongside)
-
-**Implements:** `parallelTaskStore.ts`, `MiniDAG.tsx`, `TaskMonitorCard.tsx`, `TaskMonitorGrid.tsx`; minor backend: `GET /api/tasks?status=running` filter
-
-**Must avoid:**
-- Pitfall 2 (HTTP/1.1 6-connection limit) — decide HTTP/2 TLS vs. multiplexed SSE endpoint as Phase 3 kickoff decision; do not start building without resolving this
-- Pitfall 6 (stale Zustand closure) — restructure store to `Map<taskId, TaskViewState>` before adding second task pane
-
-**Research flag:** The HTTP/2 vs. multiplexed SSE decision benefits from a quick technical spike if the deployment target does not already have TLS configured.
+**Research flag:** The artifact type contract is a design decision that blocks all implementation and needs agreement between backend and frontend before either side builds. This is the phase kickoff decision, not ongoing research.
 
 ---
 
-### Phase 4: Enhanced Chat Interaction (Sub-Agent Intervention)
+### Phase 3: Streaming Agent Output
 
-**Rationale:** Most complex feature; builds on all prior phases. Depends on Phase 1 for visual feedback when an agent is responding. The advisory/directive intervention model decision is a hard precondition — the wrong choice leads to a full rewrite of `InterventionRouter`. Build last to avoid changing conversation handler plumbing multiple times.
+**Rationale:** The highest-impact UX feature and the most architecturally complex. Streaming is most compelling when agents use tools — watching an agent search the web and type results token-by-token is the core "wow moment." Requires tool use (Phase 1) to be meaningful and benefits from artifact rendering (Phase 2) being in place so streamed artifacts render correctly as they arrive. The two-layer SSE architecture (OpenAI SSE → A2A SSE → broker relay → browser) must be designed carefully before implementation starts.
 
-**Delivers:** Users can send @mention messages to running sub-agents mid-execution; `input_required` subtask state unblocked by user chat message; agent replies appear inline with correct sender attribution
+**Delivers:** Token-by-token streaming from LLM through A2A `tasks/sendSubscribe` to frontend SSE; `StreamingMessage.tsx` with blinking cursor animation; ephemeral `agent.streaming_chunk` events through broker (non-persisted, bypass event store); final message persisted as normal `message` event; `X-Accel-Buffering: no` header on SSE endpoints for proxy compatibility; poll fallback maintained for non-streaming agents.
 
-**Addresses:** User-to-sub-agent direct chat (flagship differentiator)
+**Addresses:** Table stakes: streaming agent output.
 
-**Implements:** `InterventionRouter` in `handlers/conversations.go`, A2A contextId threading for active subtasks, `POST /api/tasks/{id}/subtasks/{subtask_id}/input` endpoint, `input_required` state in `ConversationView`
+**Avoids:**
+- Pitfall 2 (tool call delta accumulation failure) — use SDK's `ChatCompletionAccumulator`; index-keyed accumulator map for raw streaming; validate JSON only after `finish_reason`
+- Pitfall 3 (broker buffer overflow) — separate ephemeral streaming channel, not the existing event broker
+- Pitfall 6 (poll loop incompatibility) — check `AgentCard.capabilities.streaming`; keep poll path as fallback for non-streaming agents
+- Pitfall 8 (SSE reconnection gap) — store partial accumulated text in Zustand keyed by subtask ID; reconnection resumes appending, does not restart
+- Pitfall 11 (proxy buffering breaks streaming) — `X-Accel-Buffering: no` response header on all SSE endpoints; document Nginx config requirements
 
-**Must avoid:**
-- Pitfall 4 (intervention race with executor) — define advisory vs. directive model explicitly; start with advisory (no executor coordination needed) and add directive as a follow-on
-- Pitfall 10 (unbounded message history) — add cursor-based pagination before building the richer chat UI
+**Suggested sub-phases:**
+1. Agent binary: `tasks/sendSubscribe` JSON-RPC handler + OpenAI SDK streaming (`stream.Next()` / `stream.Current()`)
+2. A2A streaming client (`internal/a2a/streaming.go`) + executor streaming path in `runSubtask`
+3. Frontend: `StreamingMessage` component + store handler for `agent.streaming_chunk` events + SSE reconnection recovery
 
-**Research flag:** This phase needs deeper research or a design spike on A2A `input_required` state mechanics and contextId threading before implementation begins. The A2A spec's task state machine (WORKING → INPUT_REQUIRED → WORKING → COMPLETED) must be implemented correctly.
+**Research flag:** This phase needs a design session before implementation. The two-layer SSE coordination (A2A streaming client + broker relay), the non-persisted event strategy, and the tool call delta accumulation under streaming all require explicit technical design. Do not start coding without documenting the streaming pipeline design.
 
 ---
 
-### Phase 5: A2A Showcase + Adaptive Replanning Visibility
+### Phase 4: Inbound Webhooks
 
-**Rationale:** Lower complexity; builds on stable foundation from Phases 0-3. Surfaces existing backend capabilities (replanning events, A2A wire data) that are already there but invisible. Directly serves the "canonical A2A learning resource" positioning.
+**Rationale:** Fully independent of the other three features — no shared infrastructure dependencies. Placed last because it adds breadth (external triggers) rather than deepening the core agent interaction demo. The implementation pattern is well-understood and mirrors existing outbound webhook code. Security requirements are clear from research and must be addressed from day one, not deferred within the phase.
 
-**Delivers:** Dev panel showing agent-card.json and raw A2A JSON-RPC call/response for selected subtask; `task.replanned` event surfaced as special timeline entry with old vs. new subtask diff
+**Delivers:** `POST /api/webhooks/ingest/{source}` endpoint outside auth middleware; HMAC signature verification mirroring existing `internal/webhook/sender.go` signing; GitHub and Slack payload parsers; idempotency via delivery ID deduplication (`webhook_deliveries` table with unique constraint); `webhook_triggers` DB table with dual-secret support (`current_secret`, `previous_secret`); inbound webhook management UI; ack-first pattern (202 before processing).
 
-**Addresses:** A2A dev panel (differentiator), adaptive replanning visibility (differentiator)
+**Addresses:** Table stakes: inbound webhook endpoint. Differentiator: webhook template library (GitHub + Slack presets).
 
-**Research flag:** No new backend work; purely frontend composition of existing audit/event data. Standard patterns; no research phase needed.
+**Avoids:**
+- Pitfall 4 (prompt injection via webhook payloads) — HMAC verification required before any processing; content sanitization (length limits, control character stripping); `[EXTERNAL CONTENT]` delimiters in orchestrator prompt
+- Pitfall 9 (duplicate tasks from provider retries) — ack-first (return 202 immediately on validation), background goroutine for processing, idempotency key from `X-GitHub-Delivery` or equivalent
+- Pitfall 15 (secret rotation downtime) — dual-secret schema (`previous_secret` column) from day one even if rotation UI is deferred
+
+**Suggested sub-phases:**
+1. Backend: handler, ingestion logic, provider parsers (GitHub, Slack, generic), DB migration with dual-secret schema, idempotency table
+2. Frontend: webhook trigger management UI + two template presets
+
+**Research flag:** Standard patterns. The outbound webhook code in `internal/webhook/sender.go` is the direct reference implementation. No deeper research phase needed.
 
 ---
 
 ### Phase Ordering Rationale
 
-- Phase 0 before everything — broken demo means no GitHub traction; SSE race fix prevents it from being baked into all new features
-- Phase 1 before Phases 3 and 4 — `agentStatusStore` is shared infrastructure; building multi-task view or intervention UI without it means duplicating status logic
-- Phase 2 is parallel to Phase 1 — template system touches different backend subsystems (executor, template handlers) with no SSE dependency
-- Phase 3 after Phase 1 — `AgentStatusDot` directly used in `TaskMonitorCard`; clean dependency
-- Phase 4 last — most complex, touches the most-coupled handler (`conversations.go`), needs all prior stabilization
-- Phase 5 last — purely additive frontend; no risk to other features; good milestone closer
+- Tool use before everything: produces the structured data that makes all other features meaningful; has no dependencies on other v2.0 features
+- Artifact rendering before streaming: streamed artifacts should render correctly on arrival; building the renderer first means the streaming phase does not also need to build display components under time pressure
+- Streaming third: highest complexity; benefits from tools being stable and rendering being in place; the "wow" is watching a tool-using agent type results
+- Webhooks last: fully independent; adding an external trigger surface is breadth, not depth; security requirements are clear
 
 ### Research Flags
 
-Phases needing deeper research or design spikes before implementation:
+Phases needing focused design before implementation:
 
-- **Phase 3:** HTTP/2 vs. multiplexed SSE architecture decision — must be made before building; 1-2 hour technical spike recommended
-- **Phase 4:** A2A `input_required` state mechanics and contextId threading — needs spec review and design doc before writing `InterventionRouter`; advisory vs. directive model must be documented as an explicit decision
+- **Phase 3 (Streaming):** Requires a technical design session before coding. The two-layer SSE architecture, broker bypass for ephemeral events, and tool call delta accumulation under streaming all need explicit documentation before any of the three sub-phases begins.
+- **Phase 2 (Artifact Schema):** The artifact type contract is a design decision that blocks all implementation on both backend and frontend. The schema definition must be the first deliverable of the phase.
 
-Phases with well-documented patterns (no research phase needed):
-- **Phase 0:** Docker Compose, README patterns, SSE dedup — all standard
-- **Phase 1:** React Flow NodeStatusIndicator, Zustand store, SSE fanout — all documented
-- **Phase 2:** Go keyword scoring, PostgreSQL JSONB, Zustand persist — all verified against existing codebase
-- **Phase 5:** Frontend composition of existing data — no new patterns
+Phases with standard, well-documented patterns (skip research-phase):
+
+- **Phase 1 (Tool Use):** OpenAI function calling is extensively documented. The SDK handles the hard parts. `ChatMessage` struct redesign is clearly specified.
+- **Phase 4 (Webhooks):** Standard REST + HMAC pattern with existing outbound code as direct reference.
 
 ---
 
@@ -216,49 +206,49 @@ Phases with well-documented patterns (no research phase needed):
 
 | Area | Confidence | Notes |
 |------|------------|-------|
-| Stack | HIGH | Verified against existing codebase, official docs, and npm. Version compatibility warning on react-resizable-panels v4 is documented with specific GitHub issue reference |
-| Features | HIGH | Cross-referenced against 5+ competitor platforms; existing codebase verified for baseline capabilities |
-| Architecture | HIGH | Primarily based on direct codebase reading (`HIGH confidence` per researcher). Workflow memory retrieval source returned 404 (one LOW confidence finding); does not affect core architecture |
-| Pitfalls | HIGH | All critical pitfalls grounded in specific file/line references from codebase analysis and `CONCERNS.md`. External sources corroborate patterns |
+| Stack | HIGH | Official SDK version verified (v3.30.0, 2026-03-25); compatibility matrix confirmed; remark-gfm 4.0.1 stable; rehype-highlight 7.0.2 verified. One medium-confidence note: rehype-highlight + Next.js 16 App Router integration needs build-time testing before committing. |
+| Features | HIGH | Table stakes features are well-established 2026 patterns. Dependency order confirmed by multiple sources. Anti-features clearly scoped. Tavily vs Brave recommendation is medium confidence (vendor benchmarks); tool interface abstracts the provider so switching is low-cost. |
+| Architecture | HIGH for tool use, artifacts, webhooks. MEDIUM for streaming. | Tool use, artifacts, and webhooks have clean integration paths grounded in direct codebase analysis. Streaming is the most complex integration — A2A streaming spec is well-defined, but implementing two-layer SSE coordination in Go introduces coordination risk. |
+| Pitfalls | HIGH | Top 5 pitfalls all confirmed by direct codebase analysis (broker buffer size 64, ChatMessage struct, EventSource reconnection, existing HMAC in sender.go, untyped MessagePart.Data) and community-documented OpenAI function calling bugs. |
 
 **Overall confidence:** HIGH
 
 ### Gaps to Address
 
-- **@dnd-kit/core React 19 compatibility** — not explicitly verified; check before adding to `package.json`. Workaround: implement basic drag using native HTML5 drag events if compatibility is unconfirmed
-- **react-resizable-panels v4 + shadcn resizable compatibility** — GitHub issue #9136 was open as of research date; validate `pnpm dlx shadcn@latest add resizable` installs without error before building Phase 3 layout
-- **Advisory vs. directive chat intervention model** — research surfaced the architectural fork but deliberately left the decision to the planning phase; this is a product decision (UX tradeoff: advisory is simpler and honest; directive is the "flagship" demo but requires executor coordination)
-- **Template variable UX pattern** — placeholder syntax (`{{var}}`) vs. prompted variables at creation time vs. LLM-derived substitution; the right choice depends on target user sophistication; needs brief design decision before Phase 2 `StepEditor` work begins
-- **HTTP/2 TLS for development deployment** — if `docker compose` serves over plain HTTP, the HTTP/2 SSE multiplexing benefit is unavailable (HTTP/2 requires TLS in browsers); multiplexed application-layer SSE endpoint is the safer default for dev tooling
+- **Tavily vs Brave search API:** Research recommends Tavily for agent-optimized responses on the free tier (1000 searches/month). Brave has higher benchmark scores (14.89 vs 13.67) but returns raw results requiring extraction. Validate Tavily response quality in the context of TaskHub's agent prompts during Phase 1. The tool interface abstracts the provider — switching later is low-cost.
+- **rehype-highlight + Next.js 16 App Router integration:** Flagged MEDIUM confidence in STACK.md. Test the CSS import (`highlight.js/styles/github-dark.css`) from the transitive dependency during Phase 2 setup; may need explicit `highlight.js` install.
+- **OpenAI Responses API vs Chat Completions API:** FEATURES.md recommends Responses API; ARCHITECTURE.md recommends staying with Chat Completions to avoid a second API style. Resolved: use Chat Completions. The existing `internal/llm/openai.go` uses it, the SDK supports it fully, and function calling is complete in Chat Completions.
+- **Streaming reconnection UX:** The Zustand partial-text accumulation approach for SSE reconnection is the right pattern, but the exact reconnection UX (placeholder vs. silent resume) is a product decision to make during Phase 3 planning.
+- **Dual-secret webhook rotation UX:** The schema should include `previous_secret` from day one (Phase 4). The rotation workflow (when does the old secret expire, how does the user rotate) needs design before the management UI is built.
 
 ---
 
 ## Sources
 
 ### Primary (HIGH confidence)
-- Existing codebase: `internal/events/broker.go`, `internal/handlers/stream.go`, `internal/handlers/templates.go`, `internal/executor/executor.go`, `web/lib/store.ts`, `web/lib/sse.ts`, `internal/models/agent.go`, `internal/models/template.go`
-- React Flow v12 NodeStatusIndicator: reactflow.dev/ui/components/node-status-indicator
-- A2A Protocol v1.0.0: github.com/a2aproject/A2A + a2a-protocol.org/latest/specification
-- Azure Architecture Center AI Agent Design Patterns: learn.microsoft.com/azure/architecture/ai-ml/guide/ai-agent-design-patterns (updated 2026-03-07)
-- Tailwind CSS v4 animate-ping: tailwindcss.com docs
-- Zustand v5 persist middleware: zustand.docs.pmnd.rs/reference/middlewares/persist
-- shadcn/ui Tailwind v4 compatibility: ui.shadcn.com/docs/tailwind-v4
+- [openai/openai-go GitHub](https://github.com/openai/openai-go) — v3.30.0 release verified 2026-03-25; function calling and streaming examples verified
+- [A2A Protocol Specification](https://a2a-protocol.org/latest/specification/) — `tasks/sendSubscribe`, `TaskStatusUpdateEvent`, `TaskArtifactUpdateEvent`, artifact Part types
+- [A2A Streaming and Async](https://a2a-protocol.org/latest/topics/streaming-and-async/) — SSE event format, streaming task state machine
+- [OpenAI Streaming Events Reference](https://developers.openai.com/api/reference/resources/chat/subresources/completions/streaming-events) — delta format, finish_reason values, tool call accumulation
+- Direct codebase analysis — `internal/events/broker.go` (buffer 64, silent drop at line 61-65), `internal/llm/openai.go` (ChatMessage struct), `internal/executor/executor.go` (pollUntilTerminal at line 750), `internal/webhook/sender.go` (HMAC signing pattern), `web/lib/sse.ts` (EventSource reconnection), `internal/a2a/client.go` (MessagePart Data any)
+- [remark-gfm npm](https://www.npmjs.com/package/remark-gfm) — v4.0.1 stable, react-markdown 10.x compatible
+- [rehype-highlight npm](https://www.npmjs.com/package/rehype-highlight) — v7.0.2 verified
 
 ### Secondary (MEDIUM confidence)
-- A2A Protocol specification task state enumeration — spec authoritative but partial content retrieved
-- Real-time presence platform patterns (heartbeat, single fanout) — systemdesign.one, aligns with existing broker implementation
-- LangGraph human-in-the-loop interrupt pattern (Python-specific, pattern applies to Go)
-- Go health aggregation patterns — oneuptime.com/blog 2026-02-01
-- shadcn resizable v4 compatibility issue — github.com/shadcn-ui/ui/issues/9136
-- Browser SSE 6-connection limit (Chrome Won't Fix): issues.chromium.org/issues/40329530
-- SSE HTTP/2 multiplexing solution: medium.com/@kaitmore
-- Multi-agent failure modes: medium.com/@rakesh.sheshadri44
-- LLM prompt injection via templates (OWASP LLM01:2025): genai.owasp.org/llmrisk/llm01-prompt-injection
+- [OpenAI Function Calling Guide](https://platform.openai.com/docs/guides/function-calling) — tool schema requirements, strict mode, parallel_tool_calls
+- [OpenAI Conversation State Guide](https://platform.openai.com/docs/guides/conversation-state) — tool message ordering requirements
+- [Agentic Search Benchmark 2026](https://aimultiple.com/agentic-search) — Tavily vs Brave score comparison
+- [Webhook security best practices](https://hookdeck.com/webhooks/guides/webhook-security-vulnerabilities-guide) — HMAC, replay prevention, idempotency
+- [Webhook replay prevention](https://webhooks.fyi/security/replay-prevention) — timestamp window + idempotency store pattern
+- [SSE behind Nginx](https://medium.com/@dsherwin/surviving-sse-behind-nginx-proxy-manager-npm-a-real-world-deep-dive-69c5a6e8b8e5) — proxy_buffering, X-Accel-Buffering header
+- [Slack Webhook Triggers](https://api.slack.com/automation/triggers/webhook) — official Slack signing scheme
+- [OpenAI Community: Streaming + Function Calls](https://community.openai.com/t/help-for-function-calls-with-streaming/627170) — real-world developer struggles with tool call streaming
 
 ### Tertiary (LOW confidence)
-- Workflow memory and template retrieval (emergence.ai blog) — URL returned 404; finding based on search snippet only; does not affect core recommendations
+- [Multi-Agent Framework Comparison 2026](https://gurusup.com/blog/best-multi-agent-frameworks-2026) — context for "agents doing real work" positioning
+- [Vercel ai-elements shiki issue #14](https://github.com/vercel/ai-elements/issues/14) — performance evidence against react-syntax-highlighter (community report, not independently verified)
 
 ---
 
-*Research completed: 2026-04-04*
+*Research completed: 2026-04-06*
 *Ready for roadmap: yes*

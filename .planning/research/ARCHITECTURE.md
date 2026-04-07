@@ -1,557 +1,556 @@
-# Architecture Patterns: A2A Meta-Agent Platform Milestone Features
+# Architecture: v2.0 Feature Integration
 
-**Domain:** Multi-agent orchestration platform with real-time observability
-**Researched:** 2026-04-04
-**Scope:** Agent status visualization, enhanced chat interaction, multi-task parallel view, template/experience systems — integrated into existing Go + Next.js + PostgreSQL + A2A stack
+**Domain:** A2A multi-agent platform -- agent tool use, artifact rendering, streaming output, inbound webhooks
+**Researched:** 2026-04-06
+**Scope:** How new features integrate with existing TaskHub architecture
 
----
+## Executive Summary
 
-## Current Architecture Baseline
+The four v2.0 features touch every major layer of the existing system, but the integration surface is well-defined. Agent tool use lives entirely inside `cmd/openaiagent/` and `internal/llm/`. Artifact rendering is a frontend-only concern (new components in `web/components/chat/`). Streaming output requires coordinated changes across the A2A client, executor, broker, SSE handler, and frontend. Inbound webhooks are a new independent handler registered in `cmd/server/main.go`.
 
-The existing system is already well-structured. This section maps what exists before describing what the milestone adds.
-
-```
-Frontend (Next.js App Router)
-  └── Zustand stores  ──── SSE Manager ─────────┐
-  └── API Client (api.ts)                        │
-                                                 ↓
-Backend (Go / chi router)                  In-Memory Broker
-  └── HTTP Handlers                        (events/broker.go)
-  └── DAGExecutor                               ↑
-  └── Orchestrator                         Event Store
-  └── A2A Client/Server                    (events/store.go → PostgreSQL)
-  └── HealthChecker (background goroutine)
-  └── Policy Engine
-  └── Audit Logger
-```
-
-**Key existing capabilities used by this milestone:**
-- `events/broker.go`: In-memory pub/sub keyed by `task_id` and `"conv:{id}"`. Buffer size 64. Drop-on-full.
-- `a2a/health.go`: HealthChecker background goroutine. Polls every 60s. Updates `agents.is_online`, `agents.last_health_check`, `agents.skill_hash`.
-- `handlers/agent_health.go`: REST endpoints for per-agent and overview health metrics (success rate, avg duration, subtask counts).
-- `handlers/templates.go`: Full CRUD + `CreateFromTask` (extract DAG plan from completed task) + `ListExecutions` + `Rollback`.
-- `models/agent.go`: Agent has `is_online bool`, `last_health_check *time.Time`, `skill_hash string` — status data already exists.
-- `models/template.go`: `WorkflowTemplate`, `TemplateVersion`, `TemplateExecution` — versioning and execution tracking already exists.
-- `conversationStore.ts`: Single Zustand store per conversation, single SSE connection, handles task + message events.
-
-**What is missing for this milestone:**
-- No derived `activity_status` (working/idle) beyond `is_online` — the DB only knows if the health check passed, not whether an agent is currently running a subtask.
-- No global agent status SSE channel — status updates are only in task-scoped streams.
-- Chat does not route user messages directly to sub-agents mid-execution.
-- Dashboard shows tasks in a list; no parallel multi-task monitoring with live DAG per task.
-- Templates exist but have no similarity matching for automatic suggestion at task creation time.
+The key architectural insight: these features are layered, not tangled. Tool use changes the agent binary. Artifacts change how output is rendered. Streaming changes how output is delivered. Webhooks add a new entry point. They can be built in dependency order with clean boundaries.
 
 ---
 
-## Component Architecture for This Milestone
+## Feature 1: Agent Tool Use (OpenAI Function Calling)
 
-### Component 1: Agent Activity Status Layer
+### What Changes
 
-**What it does:** Derives a four-state presence signal — `online`, `working`, `idle`, `offline` — and broadcasts it to connected frontends.
+Agent tool use adds OpenAI function calling to `cmd/openaiagent/`. Currently, agents make a single `ChatWithHistory` call and return the result text. With tool use, the agent must:
 
-**Why the current model is insufficient:**
-- `is_online` (boolean) reflects only health-check reachability. An agent can be online but have 0 running subtasks (idle) or be in the middle of 3 concurrent subtasks (working).
-- Activity must be derived from `subtasks` table state, not polled from the agent.
+1. Define tools in the chat completions request
+2. Detect `tool_calls` in the response
+3. Execute tool functions (e.g., web search)
+4. Send tool results back as `role: "tool"` messages
+5. Get the final response and return it
 
-**Component boundary:**
+### Components Modified
+
+| Component | Change | Scope |
+|-----------|--------|-------|
+| `internal/llm/openai.go` | Add `ChatWithTools` method that handles tool definitions, `tool_calls` detection, and tool result loop | Medium |
+| `cmd/openaiagent/openai.go` | Use `ChatWithTools` instead of `ChatWithHistory` when tools are configured | Small |
+| `cmd/openaiagent/roles.go` | Add tool definitions per role (e.g., engineering gets web search) | Small |
+| `cmd/openaiagent/main.go` | No structural change -- tool use is internal to the agent's LLM call | None |
+
+### New Components
+
+| Component | Purpose |
+|-----------|---------|
+| `internal/llm/tools.go` | Tool definition types, tool execution dispatcher, web search implementation |
+| `cmd/openaiagent/tools.go` | Agent-specific tool registry, maps role to available tools |
+
+### Data Flow Change
 
 ```
-HealthChecker (existing, 60s interval)
-  → writes is_online to agents table
-  → publishes agent.health_changed event to broker (NEW)
+BEFORE:
+  executor -> A2A SendMessage -> openaiagent -> LLM Chat -> text response -> A2A result
 
-AgentActivityTracker (NEW — lightweight background goroutine in executor)
-  → subscribes to subtask start/complete/fail events already published by DAGExecutor
-  → derives working/idle from live running subtask count
-  → publishes agent.status_changed event to global broker topic ("agents")
-
-Broker (existing, extend to support global "agents" topic)
-  → fanout to all SSE subscribers of /api/agents/stream (NEW endpoint)
+AFTER:
+  executor -> A2A SendMessage -> openaiagent -> LLM ChatWithTools
+    -> tool_calls detected -> execute tool (web search) -> send results back to LLM
+    -> final text response with real data -> A2A result
 ```
 
-**Data flow:**
+### Integration Points
+
+1. **LLM Client (`internal/llm/openai.go`)**: The existing `ChatWithHistory` sends a simple `chatRequest` with `model` and `messages`. The new `ChatWithTools` adds a `tools` field to the request and handles the multi-turn tool calling loop. The request format changes to:
+
+```go
+type chatRequest struct {
+    Model    string        `json:"model"`
+    Messages []ChatMessage `json:"messages"`
+    Tools    []Tool        `json:"tools,omitempty"` // NEW
+}
+
+type Tool struct {
+    Type     string       `json:"type"` // "function"
+    Function ToolFunction `json:"function"`
+}
+
+type ToolFunction struct {
+    Name        string          `json:"name"`
+    Description string          `json:"description"`
+    Parameters  json.RawMessage `json:"parameters"`
+    Strict      bool            `json:"strict,omitempty"`
+}
 ```
-DAGExecutor.executeSubtask() publishes "agent.working" event
-  → Broker publishes to task topic (existing) + "agents" global topic (NEW)
-  → SSE /api/agents/stream delivers to any connected frontend
-  → Frontend AgentStatusDot component updates color/state
 
-HealthChecker.checkOne() result
-  → UPDATE agents SET is_online = $1 (existing)
-  → Broker publishes "agent.health_changed" to "agents" topic (NEW)
+The response format adds `tool_calls`:
+
+```go
+type chatResponse struct {
+    Choices []struct {
+        Message struct {
+            Content   string     `json:"content"`
+            ToolCalls []ToolCall `json:"tool_calls,omitempty"` // NEW
+        } `json:"message"`
+        FinishReason string `json:"finish_reason"` // NEW: "tool_calls" or "stop"
+    } `json:"choices"`
+}
+
+type ToolCall struct {
+    ID       string `json:"id"`
+    Type     string `json:"type"`
+    Function struct {
+        Name      string `json:"name"`
+        Arguments string `json:"arguments"` // JSON string
+    } `json:"function"`
+}
 ```
 
-**Derived status logic (backend):**
+2. **Tool Result Messages**: After executing tools, results go back as:
 
-| is_online | running_subtasks | Displayed status |
-|-----------|-----------------|-----------------|
-| false | any | offline |
-| true | 0 | idle |
-| true | > 0 | working |
+```go
+ChatMessage{
+    Role:       "tool",
+    Content:    resultJSON,
+    ToolCallID: call.ID, // matches the tool_call.id
+}
+```
 
-This derivation happens at query time (join agents with COUNT of running subtasks) and via SSE events — no separate status column needed.
+The `ChatMessage` struct needs a `ToolCallID` field. This is backward-compatible -- the field is omitted when empty.
 
-**Frontend components needed:**
-- `AgentStatusDot.tsx` — colored indicator (green=idle, blue=working, red=offline). Receives status from Zustand `agentStatusStore`.
-- `agentStatusStore.ts` — Zustand store subscribing to `/api/agents/stream` SSE. Maps `agent_id → status`. Shared across all views.
+3. **A2A Protocol**: No changes needed. Tool use is internal to the agent. The A2A response still returns text/artifact parts. The executor sees the same `SendResult` it always has.
 
-**Communicates with:** DAGExecutor (event source), Broker (event transport), SSE stream handler, agentStatusStore (frontend consumer).
+4. **Audit Logging**: The executor already logs `agent.submit` and `agent.completed`. Tool use happens inside the agent binary, so tool call details should be logged there (stdout/stderr for now). Future: agent could return tool metadata in artifacts.
+
+### Architecture Decision
+
+Use the Chat Completions API directly (not the Responses API), because:
+- The existing `internal/llm/openai.go` already uses Chat Completions
+- Function calling is fully supported in Chat Completions
+- No need to introduce a second API style
+- The Responses API is newer but not necessary for our use case
+
+**Confidence: HIGH** -- OpenAI function calling is well-documented and the integration is self-contained.
 
 ---
 
-### Component 2: Enhanced Chat Interaction (Sub-Agent Direct Messaging)
+## Feature 2: Artifact Rich Rendering
 
-**What it does:** Allows users to send messages directly to a running sub-agent during task execution, with the agent's response appearing inline in the conversation chat.
+### What Changes
 
-**Why the current architecture already supports most of this:**
-- `conversations.go` already checks for `@mention` patterns and routes to agents.
-- The A2A protocol supports `input_required` state — an agent can pause and wait for human input.
-- The broker has dual routing: task events and conversation events already flow to the same SSE stream.
+Currently, `ChatMessage.tsx` renders all message content through `renderContent()` which handles markdown, JSON code blocks, and tables. Agent output from subtask completion arrives as a text string published via `publishMessage()` in the executor.
 
-**What needs to extend:**
+Artifact rendering adds structured output types that render as rich UI cards: tables, reports, code diffs, charts. This requires agents to output structured artifacts and the frontend to recognize and render them.
 
+### Components Modified
+
+| Component | Change | Scope |
+|-----------|--------|-------|
+| `web/components/chat/ChatMessage.tsx` | Detect artifact metadata in messages, delegate to artifact renderers | Medium |
+| `web/lib/types.ts` | Add artifact type definitions | Small |
+| `internal/a2a/protocol.go` | Add `type` field to `MessagePart` for typed artifacts | Small |
+| `cmd/openaiagent/roles.go` | Update system prompts to instruct structured output format | Small |
+| `internal/executor/executor.go` | Pass artifact type metadata through message publishing | Small |
+
+### New Components
+
+| Component | Purpose |
+|-----------|---------|
+| `web/components/artifacts/ArtifactCard.tsx` | Container component: artifact type detection, card chrome (title, expand, copy) |
+| `web/components/artifacts/TableArtifact.tsx` | Renders tabular data as a styled table |
+| `web/components/artifacts/CodeArtifact.tsx` | Renders code with syntax highlighting |
+| `web/components/artifacts/ReportArtifact.tsx` | Renders structured report sections |
+| `web/components/artifacts/JsonArtifact.tsx` | Renders JSON with collapsible tree view |
+
+### Data Flow
+
+The key question is: how do artifacts flow from agent to frontend?
+
+**Current flow:**
 ```
-User types "@ResearchAgent clarify the scope"
-  → POST /api/conversations/{id}/messages (existing endpoint)
-  → ConversationHandler.SendMessage() (existing)
-  → Mention parser extracts agent ID (existing)
-  → Route to agent via A2A client with conversation context (mostly existing, needs improvement)
-  → Agent response published as "message" event with sender_type="agent" (existing pattern)
-  → SSE delivers to conversation stream (existing)
-  → Frontend shows inline agent reply in chat thread
-```
-
-**The gap is in the A2A routing path:**
-Current `@mention` routing in `conversations.go` dispatches to the agent but does not tie the reply back to the specific subtask context. The handler needs to:
-1. Look up the agent's active subtask for this task (if any) to provide contextId.
-2. Publish the result as a message with the correct `task_id` so the DAGPanel can correlate.
-
-**Component boundary:**
-
-```
-ConversationHandler (existing)
-  extends SendMessage():
-    - if @mention found AND task is running:
-        resolve agent_id from mention
-        look up active subtask (agent_id + running status) for current task
-        call A2AClient with subtask contextId (for memory continuity)
-        await response (or fire-and-forget + SSE)
-        publish message event with sender_type="agent", sender_name=agent.name
-
-InterventionRouter (NEW — thin service in handlers/conversations.go)
-  - resolveAgentFromMention(mentionText, conversationID) → agentID
-  - findActiveSubtaskContext(agentID, taskID) → contextID, subtaskID
-  - dispatchToAgent(agentID, contextID, userMessage) → response message
+Agent completes -> executor receives result.Artifacts (json.RawMessage)
+  -> executor stores in subtask.output
+  -> executor publishes artifact text as chat message (publishMessage)
+  -> frontend renders text via ChatMessage.tsx
 ```
 
-**State machine for agent interaction:**
-
+**New flow:**
 ```
-Task running:
-  user sends @mention → InterventionRouter → A2A dispatch → agent reply → message event
-
-Task completed:
-  user sends @mention → message stored → no agent dispatch (task is done)
-  (future: allow post-hoc questions by recreating context)
-
-Task input_required:
-  agent published input_required A2A state → executor pauses subtask
-  frontend shows "Waiting for input" state on subtask node
-  user sends message (no mention needed — it's the pending input)
-  → POST /api/tasks/{id}/subtasks/{subtask_id}/input (NEW endpoint)
-  → executor resumes subtask with user input
+Agent completes -> executor receives result.Artifacts with typed parts
+  -> executor stores in subtask.output
+  -> executor publishes message with artifact metadata
+  -> SSE delivers message event with metadata.artifacts field
+  -> ChatMessage.tsx detects artifacts, renders ArtifactCard components
 ```
 
-**Communicates with:** ConversationHandler, A2A Client, DAGExecutor (for input_required state), Broker, SSE stream.
+### Artifact Format Convention
+
+Rather than changing the A2A wire format, use the message `metadata` field (already JSONB in the database, already `metadata?: Record<string, unknown>` in TypeScript):
+
+```typescript
+interface ArtifactMetadata {
+  artifacts?: Array<{
+    type: "table" | "code" | "report" | "json" | "diff";
+    title?: string;
+    data: unknown; // type-specific payload
+  }>;
+}
+```
+
+Agents produce artifacts by formatting their output as JSON with a known schema. The executor parses the agent response, detects artifact format, and attaches metadata. The frontend reads `message.metadata.artifacts` and renders accordingly.
+
+### Integration Points
+
+1. **Agent System Prompts (`cmd/openaiagent/roles.go`)**: Prompts need explicit instructions to produce structured output in a known JSON format when the task calls for structured data (tables, reports). This is the simplest approach -- no protocol changes, just prompt engineering.
+
+2. **Executor Message Publishing**: The `handleA2AResult` method currently calls `publishMessage(ctx, task.ID, agent.ID, agent.Name, outputStr)`. It needs to additionally parse the output for artifact markers and attach them as message metadata.
+
+3. **Message Model**: The `messages` table already has a `metadata JSONB` column. The `Message` TypeScript interface already has `metadata?: Record<string, unknown>`. No schema changes needed.
+
+4. **SSE**: The message event already includes all fields from the messages table including metadata. No SSE changes needed.
+
+**Confidence: HIGH** -- Uses existing metadata fields, no protocol or schema changes.
 
 ---
 
-### Component 3: Multi-Task Parallel View
+## Feature 3: Streaming Agent Output
 
-**What it does:** A dashboard panel showing multiple tasks executing concurrently, each with a live mini-DAG and status indicator.
+### What Changes
 
-**Architecture approach:**
-This is primarily a frontend architecture problem. The backend already supports multiple SSE connections (broker handles arbitrary task subscriptions). The challenge is managing multiple concurrent SSE connections in the browser without excessive re-renders.
+This is the most architecturally complex feature. Currently:
 
-**Component boundary:**
+1. Executor sends A2A message to agent
+2. Agent returns immediately with `state: "working"`
+3. Executor polls with `tasks/get` every 2 seconds until terminal state
+4. Final result arrives all at once
+
+With streaming:
+
+1. Executor sends A2A streaming request (`tasks/sendSubscribe`)
+2. Agent responds with SSE stream
+3. Tokens arrive incrementally as `TaskStatusUpdateEvent` and `TaskArtifactUpdateEvent`
+4. Executor relays incremental tokens to the TaskHub SSE broker
+5. Frontend renders tokens as they arrive
+
+### Components Modified
+
+| Component | Change | Scope |
+|-----------|--------|-------|
+| `internal/a2a/client.go` | Add `SendMessageStream` method that reads SSE responses | Large |
+| `internal/a2a/protocol.go` | Add streaming event types (`TaskStatusUpdateEvent`, `TaskArtifactUpdateEvent`) | Medium |
+| `internal/a2a/discovery.go` | Read `capabilities.streaming` from agent card | Small |
+| `internal/executor/executor.go` | Use streaming client when agent supports it, relay tokens to broker | Large |
+| `internal/events/broker.go` | No change -- already supports publishing arbitrary events | None |
+| `internal/handlers/stream.go` | No change -- already streams events from broker | None |
+| `web/lib/sse.ts` | No change -- already parses arbitrary event types | None |
+| `web/lib/store.ts` | Add handler for new `agent.streaming_chunk` event type | Small |
+| `web/lib/types.ts` | Add streaming-related type definitions | Small |
+| `web/components/chat/ChatMessage.tsx` | Support rendering of in-progress streaming messages | Medium |
+| `cmd/openaiagent/main.go` | Support `tasks/sendSubscribe` method, stream SSE responses | Large |
+| `cmd/openaiagent/openai.go` | Add `ChatWithHistoryStream` that reads SSE chunks from OpenAI | Medium |
+
+### New Components
+
+| Component | Purpose |
+|-----------|---------|
+| `internal/a2a/streaming.go` | SSE reader, `TaskStatusUpdateEvent` / `TaskArtifactUpdateEvent` parsers |
+| `web/components/chat/StreamingMessage.tsx` | Renders an in-progress message with cursor animation |
+
+### Architecture: Two-Layer Streaming
+
+The streaming architecture has two independent SSE layers:
 
 ```
-Frontend:
-  parallelTaskStore.ts (NEW Zustand store)
-    - pinnedTaskIDs: string[]           ← tasks the user is "watching"
-    - taskStates: Record<string, TaskViewState>
-    - sseConnections: Record<string, () => void>  ← disconnect fns
+Layer 1: Agent -> TaskHub (A2A streaming)
+  OpenAI SSE -> openaiagent -> A2A SSE -> executor
 
-    pinTask(id):
-      connect SSE for task_id (reuse existing connectSSE from sse.ts)
-      subscribe to task events, update taskStates[id]
-
-    unpinTask(id):
-      disconnect SSE for task_id
-      remove from taskStates
-
-  TaskMonitorGrid.tsx (NEW component)
-    - renders N TaskMonitorCard components
-    - layout: responsive grid (2 cols on wide screen)
-
-  TaskMonitorCard.tsx (NEW component)
-    - title, status badge, agent list with AgentStatusDot
-    - miniDAG: React Flow subgraph (simplified, no edge labels)
-    - latest message preview
-    - "Open full view" link → /c/{conv_id}
-
-  MiniDAG.tsx (NEW or extend SubtaskNode.tsx)
-    - compact React Flow with smaller nodes
-    - node color = subtask status
-    - no interactivity needed (click opens full view)
+Layer 2: TaskHub -> Browser (existing SSE)
+  executor -> broker -> stream handler -> EventSource
 ```
 
-**Data flow:**
+**Layer 1 (A2A Streaming)**:
+
+The A2A protocol defines `tasks/sendSubscribe` which returns `Content-Type: text/event-stream`. Each SSE event's `data` field is a JSON-RPC response containing either:
+- `TaskStatusUpdateEvent`: status changes + intermediate messages
+- `TaskArtifactUpdateEvent`: artifact chunks with `append` and `lastChunk` flags
+- `Task`: final task state
+
+The A2A client needs a `SendMessageStream` method that:
+1. Sends the JSON-RPC request
+2. Reads SSE events from the response body
+3. Returns a channel of streaming events
+4. Closes when the task reaches terminal state
+
+```go
+type StreamEvent struct {
+    StatusUpdate   *TaskStatusUpdateEvent   // non-nil if status update
+    ArtifactUpdate *TaskArtifactUpdateEvent  // non-nil if artifact chunk
+    Task           *A2ATask                  // non-nil if final task state
+}
+
+func (c *Client) SendMessageStream(ctx context.Context, agentURL, contextID, taskID string, parts []MessagePart) (<-chan StreamEvent, error)
 ```
-User visits /dashboard (or a new /monitor route)
-  → parallelTaskStore.loadActiveTasks() → GET /api/tasks?status=running
-  → for each task: parallelTaskStore.pinTask(id)
-    → connectSSE(taskId, onEvent)
-    → onEvent updates taskStates[taskId]
-  → TaskMonitorGrid renders from taskStates
-  → each card live-updates as SSE events arrive
 
-User manually pins/unpins tasks
-  → parallelTaskStore.pinTask / unpinTask
+**Layer 2 (Browser Streaming)**:
+
+The executor receives streaming events from the A2A client and relays them as broker events. The existing broker/SSE infrastructure handles delivery to the browser.
+
+New event types published to broker:
+- `agent.streaming_chunk`: token chunk from an agent (data: `{subtask_id, agent_id, content, is_final}`)
+- `agent.streaming_complete`: stream finished
+
+These events are NOT persisted to the event store (like `agent.status_changed`). They are ephemeral -- the final message IS persisted as a regular `message` event.
+
+**Agent-Side Streaming**:
+
+The `cmd/openaiagent/` binary needs to:
+1. Handle `tasks/sendSubscribe` JSON-RPC method
+2. Call OpenAI with `stream: true`
+3. Read OpenAI SSE chunks
+4. Write A2A SSE events back to the HTTP response
+
+The OpenAI streaming format sends chunks as:
+```
+data: {"choices":[{"delta":{"content":"token"},"finish_reason":null}]}
 ```
 
-**Performance constraint:** Each pinned task = one SSE connection (EventSource). Modern browsers allow 6 simultaneous HTTP/1.1 connections per domain; with HTTP/2 (which Go's net/http supports) this is multiplexed. Cap at 6 pinned tasks to stay safe, or use a single multiplexed SSE stream (see Pitfalls).
+The agent translates these into A2A streaming events:
+```
+data: {"jsonrpc":"2.0","id":"1","result":{"taskId":"...","status":{"state":"working","message":{"role":"agent","parts":[{"text":"token"}]}}}}
+```
 
-**Backend change required (minor):** Add `GET /api/tasks?status=running` filter if not already present. No new endpoints needed for SSE — existing `/api/channels/{id}/stream` or task-level stream suffices.
+### Integration Points
 
-**Communicates with:** Existing SSE infrastructure, parallelTaskStore (new), existing Task + SubTask API endpoints.
+1. **A2A Client (`internal/a2a/client.go`)**: The existing `SendMessage` method makes a synchronous HTTP call and reads the response body as JSON. The new `SendMessageStream` opens an SSE connection. The executor checks agent capabilities and chooses between `SendMessage` (poll) and `SendMessageStream` (stream).
+
+2. **Executor DAG Loop**: The `runSubtask` method currently calls `SendMessage` then `pollUntilTerminal`. With streaming, it calls `SendMessageStream` and reads from the channel, publishing relay events to the broker. The final result still goes through `handleA2AResult`.
+
+3. **Agent Capability Detection**: The agent's `AgentCard` includes `capabilities.streaming`. The executor's `loadAgents` query returns agent data that includes the stored agent card. Check `capabilities.streaming` to decide whether to use streaming.
+
+4. **Broker Event Types**: The broker is generic -- it publishes `*models.Event` to channels. No broker changes needed. The new event types are just strings in the event's `Type` field.
+
+5. **Frontend Store**: The `handleEvent` method in `store.ts` needs a new case for `agent.streaming_chunk` that either creates a new streaming message or appends to an existing one. A `StreamingMessage` component renders in-progress text with a blinking cursor.
+
+6. **Non-Persisted Events**: Streaming chunks should NOT be saved to the events table (too many, too fast). Like `agent.status_changed`, they go through the broker only (ephemeral). The final complete message IS persisted.
+
+### Fallback: Polling Still Works
+
+Streaming is additive. If an agent does not support streaming (`capabilities.streaming: false`), the executor falls back to the existing poll-based flow. This means streaming can be shipped incrementally -- start with the agent-side, then add executor relay, then frontend rendering.
+
+**Confidence: MEDIUM** -- Architecture is sound but this is the most complex integration. The A2A streaming spec is well-defined, but implementing SSE parsing in Go and coordinating two streaming layers introduces risk.
 
 ---
 
-### Component 4: Template and Experience Accumulation System
+## Feature 4: Inbound Webhooks
 
-**What it does:** Allows successful orchestration patterns to be saved, discovered, and reused. The "experience accumulation" aspect is: each time a template is used, execution data (actual steps taken, replans, HITL interventions, duration) is recorded, enabling the template to improve over time.
+### What Changes
 
-**Existing foundation:** The template system already has `workflow_templates`, `template_versions`, `template_executions` tables and CRUD handlers. `CreateFromTask` already extracts the DAG structure from a completed task. `TemplateExecution` records HITL interventions and replan count.
+Currently, TaskHub has *outbound* webhooks: the `webhook.Sender` fires HTTP requests when events occur. Inbound webhooks add a new entry point that receives external HTTP requests and creates tasks.
 
-**What is missing for "experience accumulation":**
+This is the most independent feature -- it adds a new handler and route with minimal coupling to existing code.
 
-1. **Template suggestion at task creation time** — currently users must manually select a template. The system should suggest matching templates based on task title/description similarity.
+### Components Modified
 
-2. **Execution recording completeness** — `template_executions` exists but `duration_seconds` is not populated by the executor (only manual API calls create them). The executor needs to write a `template_execution` record on task completion when `task.template_id` is set.
+| Component | Change | Scope |
+|-----------|--------|-------|
+| `cmd/server/main.go` | Register new webhook ingestion route | Small |
+| `internal/db/migrations/` | New migration for `webhook_triggers` table | Small |
 
-3. **Evolution endpoint usability** — `handlers/evolution.go` exists but needs to surface concrete suggestions in the UI.
+### New Components
 
-**Component boundary:**
+| Component | Purpose |
+|-----------|---------|
+| `internal/handlers/webhook_ingestion.go` | Handler for `POST /api/webhooks/ingest/{source}` |
+| `internal/webhook/ingestion.go` | Business logic: validate payload, map to task creation params |
+| `internal/webhook/providers/` | Provider-specific parsers (Slack, GitHub, generic) |
+| `web/app/webhooks/inbound/page.tsx` | UI for managing inbound webhook configurations |
+| `web/components/webhook/InboundWebhookForm.tsx` | Form for creating/editing inbound webhook triggers |
 
-```
-Backend:
-
-TemplateMatcher (NEW — package internal/templates/ or method on TemplateHandler)
-  - SuggestForTask(title, description string) → []TemplateSuggestion
-  - Strategy: keyword overlap scoring (no LLM needed for MVP)
-    - tokenize title+description
-    - compare against template name + step instruction_templates
-    - return top-3 with overlap score
-  - Endpoint: GET /api/templates/suggest?q=task+description
-
-Executor (extend):
-  - on task.completed with task.template_id set:
-    - INSERT INTO template_executions (template_id, template_version, task_id, actual_steps, hitl_interventions, replan_count, outcome, duration_seconds)
-    - actual_steps = final subtask list (serialized)
-    - duration_seconds = completed_at - created_at
-  - this closes the feedback loop: every template use generates a data point
-
-EvolutionHandler (existing, extend):
-  - GET /api/templates/{id}/evolution-suggestions
-  - reads template_executions, identifies common divergences from template steps
-  - returns structured suggestions (e.g., "step 3 is often replaced with X")
-
-Frontend:
-
-TemplateSuggestionBar.tsx (NEW — shown in NewTaskDialog)
-  - when user types in description field (debounced 500ms)
-  - calls GET /api/templates/suggest?q=...
-  - shows top-3 matching templates as chips
-  - clicking a chip pre-selects it as template_id
-
-TemplateEvolutionPanel.tsx (NEW — in templates/[id]/page.tsx)
-  - shows execution history chart (success rate over time)
-  - shows evolution suggestions from /api/templates/{id}/evolution-suggestions
-  - "Apply suggestion" button → creates new template version
+### Data Flow
 
 ```
-
-**Data flow for suggestion:**
-```
-User types task description in NewTaskDialog
-  → debounced GET /api/templates/suggest?q=...
-  → TemplateMatcher scores all active templates
-  → returns [{id, name, score, step_count}]
-  → TemplateSuggestionBar renders chips
-
-User selects template → templateId set in form state
-  → POST /api/tasks {title, description, template_id}
-  → Executor loads template skeleton for orchestrator context (existing)
-  → On completion → INSERT template_execution (NEW)
+External Service (Slack, GitHub, etc.)
+  -> POST /api/webhooks/ingest/{source}?token=xxx
+  -> WebhookIngestionHandler
+    -> Validate HMAC/token authentication
+    -> Parse provider-specific payload
+    -> Map to task title + description
+    -> Create task via TaskHandler.Create logic (or direct DB insert + executor.Execute)
+  -> Return 200 OK
 ```
 
-**Data flow for experience accumulation:**
-```
-Task completes (with template_id)
-  → executor.aggregateResults()
-  → INSERT template_executions record
-  → TemplateExecution.outcome = "success" | "failed_replanned" | "failed"
-  → TemplateExecution.actual_steps = final subtask list
+### Database Schema
 
-Template detail page loads
-  → GET /api/templates/{id}/executions (existing)
-  → GET /api/templates/{id}/evolution-suggestions (existing)
-  → frontend renders execution trend + suggestions
-```
-
-**Communicates with:** TemplateHandler, Executor (for recording), NewTaskDialog (frontend), templates page (frontend).
-
----
-
-## Full System Data Flow (Milestone Features Together)
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│  FRONTEND                                                        │
-│                                                                  │
-│  Dashboard / Monitor View                                        │
-│    parallelTaskStore ←── SSE /channels/{id}/stream (per task)   │
-│    TaskMonitorGrid renders TaskMonitorCard × N                   │
-│    agentStatusStore ←── SSE /api/agents/stream (global)         │
-│                                                                  │
-│  Conversation View (/c/{id})                                     │
-│    ConversationView                                              │
-│      ChatInput → POST /api/conversations/{id}/messages           │
-│      DAGPanel ← real-time from conversationStore SSE            │
-│      MessageFeed ← conversationStore.messages                    │
-│      AgentStatusDot per agent ← agentStatusStore                │
-│                                                                  │
-│  Task Creation                                                   │
-│    NewTaskDialog → GET /api/templates/suggest → chips           │
-└─────────────────────────────────────────────────────────────────┘
-           │ HTTP/SSE                │ HTTP/SSE
-           ▼                         ▼
-┌─────────────────────────────────────────────────────────────────┐
-│  BACKEND                                                         │
-│                                                                  │
-│  cmd/server/main.go                                              │
-│    ↓ registers routes                                            │
-│    GET  /api/agents/stream    ← AgentStatusHandler.Stream (NEW) │
-│    GET  /api/templates/suggest ← TemplateHandler.Suggest (NEW)  │
-│    POST /api/conversations/{id}/messages ← (extended)           │
-│                                                                  │
-│  DAGExecutor (executor.go)                                       │
-│    executeSubtask() → Broker.Publish("agent.working")           │
-│    subtask completes → Broker.Publish("subtask.completed")      │
-│    task completes + template_id → INSERT template_execution     │
-│                                                                  │
-│  Events Broker (broker.go — extend)                             │
-│    topic "agents" → all agent status changes (NEW topic)        │
-│    topic "task:{id}" → existing task events                     │
-│    topic "conv:{id}" → existing conversation events             │
-│                                                                  │
-│  HealthChecker (a2a/health.go — extend)                         │
-│    on is_online change → Broker.Publish("agents" topic) (NEW)   │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
-           │
-           ▼
-┌─────────────────────────────────────────────────────────────────┐
-│  POSTGRESQL                                                      │
-│  agents: is_online, last_health_check (existing)                │
-│  subtasks: status, agent_id, started_at, completed_at          │
-│  template_executions: populated on task completion (extend)     │
-└─────────────────────────────────────────────────────────────────┘
-```
-
----
-
-## Build Order: Component Dependencies
-
-The four components have different dependency profiles. Build order matters.
-
-### Phase 1: Agent Status Visualization
-
-**Build this first.** Reasoning:
-- No new data model — `agents.is_online` and subtask status already exist.
-- Requires only: extend Broker with a global "agents" topic, add SSE endpoint, add `AgentStatusDot` component.
-- Unblocks: all other components that show agent status (multi-task view, conversation view) can use `agentStatusStore` immediately.
-- Complexity: LOW. Three files touched (broker.go, new handler, new TS store + component).
-
-**Build order within component:**
-1. Extend `broker.go`: add `Subscribe("agents")` support — already works, just need to use the "agents" key.
-2. Extend `HealthChecker.checkAll()` and `DAGExecutor.executeSubtask()` / subtask completion: publish to "agents" topic.
-3. Add `GET /api/agents/stream` SSE endpoint.
-4. Add `agentStatusStore.ts` in frontend.
-5. Add `AgentStatusDot.tsx`.
-6. Wire into existing `AgentCard.tsx` and `ConversationView`.
-
-### Phase 2: Template Suggestion and Experience Recording
-
-**Build second.** Reasoning:
-- Standalone backend feature (no SSE, no frontend real-time).
-- Closes an existing gap (executor does not record `template_executions`).
-- Template suggestion powers better task creation UX.
-- No dependencies on Phase 1.
-
-**Build order within component:**
-1. Extend `executor.go`: INSERT `template_execution` on task completion with `template_id`.
-2. Add `GET /api/templates/suggest` endpoint in `handlers/templates.go`.
-3. Add `TemplateSuggestionBar.tsx` in `NewTaskDialog`.
-4. Add `TemplateEvolutionPanel.tsx` in template detail page.
-
-### Phase 3: Multi-Task Parallel View
-
-**Build third.** Reasoning:
-- Depends on Phase 1 (AgentStatusDot used in TaskMonitorCard).
-- Purely frontend-heavy — no new backend endpoints needed (existing SSE + task API).
-- The `MiniDAG` component can reuse `SubtaskNode.tsx` styling.
-
-**Build order within component:**
-1. Add `parallelTaskStore.ts`.
-2. Add `MiniDAG.tsx` (simplified React Flow, no interactivity).
-3. Add `TaskMonitorCard.tsx` (status badge, mini-dag, agent dots, latest message).
-4. Add `TaskMonitorGrid.tsx` (responsive layout, pin/unpin controls).
-5. Wire into dashboard page or add `/monitor` route.
-
-### Phase 4: Enhanced Chat Interaction (Sub-Agent Intervention)
-
-**Build last.** Reasoning:
-- Most complex: requires understanding A2A contextId threading, active subtask lookup, and careful state management.
-- Depends on Phase 1 for visual feedback (show agent as "working" when responding).
-- Touches `ConversationHandler` which already has many responsibilities.
-- The `input_required` path (formal A2A pause state) needs executor cooperation.
-
-**Build order within component:**
-1. Add `InterventionRouter` logic in `handlers/conversations.go` (resolve mention → agent, find active subtask context).
-2. Extend A2A dispatch: when routing @mention during active task, use active subtask's contextId.
-3. Add `POST /api/tasks/{id}/subtasks/{subtask_id}/input` endpoint for `input_required` state.
-4. Frontend: update `ConversationView` to show input prompt when `input_required` subtask exists.
-5. Frontend: ensure `MessageFeed` renders agent replies with correct sender attribution.
-
----
-
-## Patterns to Follow
-
-### Pattern: Derive Status, Don't Store It
-
-**What:** Agent activity status (working/idle) is derived from live `subtasks` query, not persisted as a column.
-
-**Why:** A stored `activity_status` column creates a dual-write problem — executor would need to update both subtask status and agent status atomically. Derivation at read-time or via events avoids this.
-
-**How:** At SSE subscription time, send initial state from:
 ```sql
-SELECT a.id,
-  a.is_online,
-  COUNT(s.id) FILTER (WHERE s.status = 'running') > 0 AS is_working
-FROM agents a
-LEFT JOIN subtasks s ON s.agent_id = a.id
-GROUP BY a.id, a.is_online
+CREATE TABLE IF NOT EXISTS webhook_triggers (
+    id          TEXT PRIMARY KEY,
+    name        TEXT NOT NULL,
+    source      TEXT NOT NULL,             -- "slack", "github", "generic"
+    secret      TEXT NOT NULL DEFAULT '',   -- HMAC validation secret
+    token       TEXT NOT NULL DEFAULT '',   -- URL token for authentication
+    config      JSONB NOT NULL DEFAULT '{}', -- provider-specific config
+    is_active   BOOLEAN NOT NULL DEFAULT true,
+    template_id TEXT,                       -- optional: use a workflow template
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
 ```
-Then update via SSE events as subtask status changes.
 
-### Pattern: Single Global Agent Status Channel
+### Integration Points
 
-**What:** One SSE endpoint (`/api/agents/stream`) delivers all agent status changes to all connected frontends.
+1. **Route Registration**: The inbound webhook endpoint lives OUTSIDE the auth middleware group. External services cannot authenticate with session cookies. Instead, use per-webhook token or HMAC signature verification.
 
-**Why:** Individual agent status polling (one SSE per agent) does not scale and causes N connections per client. A single fanout channel is the standard presence platform pattern.
+```go
+// Public webhook ingestion (no auth middleware -- uses per-webhook token)
+r.Post("/api/webhooks/ingest/{source}", webhookIngestionH.Ingest)
+```
 
-**How:** Broker key `"agents"` used by broker.Publish calls from HealthChecker and DAGExecutor. All agent status SSE connections subscribe to the same broker topic.
+2. **Task Creation**: The ingestion handler creates a task the same way `TaskHandler.Create` does, then calls `executor.Execute`. It needs the same dependencies: DB pool, executor reference.
 
-### Pattern: Template Suggestion via Keyword Overlap (No LLM for MVP)
+3. **Template Matching**: If a webhook trigger specifies a `template_id`, the created task references that template. The existing executor already handles `task.TemplateID`.
 
-**What:** Template matching uses TF-IDF-style overlap scoring between task description tokens and template step instruction templates.
+4. **Security**: Each inbound webhook has its own secret/token. Provider-specific validation:
+   - **GitHub**: Validate `X-Hub-Signature-256` header with HMAC-SHA256
+   - **Slack**: Validate `X-Slack-Signature` with signing secret
+   - **Generic**: Validate `?token=` query parameter or `Authorization: Bearer` header
 
-**Why:** LLM-based semantic matching is more accurate but adds latency and cost to the task creation path. Keyword overlap is fast (< 5ms), free, and adequate for a small template library (< 100 templates typical for a developer tool).
+5. **Existing Outbound Webhooks**: The outbound webhook system (`webhook.Sender`) and inbound webhook system are completely independent. They share the `/api/webhooks` URL namespace but different sub-paths (`/api/webhooks` for config, `/api/webhooks/ingest/{source}` for ingestion).
 
-**Upgrade path:** Replace scoring function with embedding similarity (pgvector) when template library grows beyond ~50 templates and users report poor suggestions.
+**Confidence: HIGH** -- Simple, independent feature with well-understood patterns.
 
-### Pattern: Fan-Out Before Persisting for Real-Time UX
+---
 
-**What:** The broker publishes events to SSE subscribers AFTER event store persistence (existing pattern). Do not change this order.
+## Component Boundary Summary
 
-**Why:** Persistence-first ensures no event is lost if a subscriber drops. The existing pattern is correct; new components must not short-circuit to broker-only.
+### New Packages/Files
 
-### Pattern: Per-Conversation SSE, Not Per-Task SSE, for Chat
+| Package/File | Layer | Depends On |
+|-------------|-------|------------|
+| `internal/llm/tools.go` | LLM | `net/http` (web search) |
+| `internal/a2a/streaming.go` | A2A Protocol | `bufio`, `encoding/json` |
+| `internal/webhook/ingestion.go` | Business Logic | DB, executor |
+| `internal/webhook/providers/` | Business Logic | None (pure parsing) |
+| `internal/handlers/webhook_ingestion.go` | HTTP | ingestion, DB |
+| `cmd/openaiagent/tools.go` | Agent | `internal/llm` |
+| `web/components/artifacts/*.tsx` | Frontend | React, types |
+| `web/components/chat/StreamingMessage.tsx` | Frontend | React, types |
 
-**What:** Chat interaction (including sub-agent replies) flows through the conversation SSE stream, not task-level streams.
+### Modified Packages (by impact)
 
-**Why:** The conversation is the user's mental model for ongoing interaction. Task events are implementation detail. The `conversationStore` already handles both message and task events on a single SSE connection — maintain this unification.
+| Package | Feature | Impact |
+|---------|---------|--------|
+| `internal/llm/openai.go` | Tool Use | Add `ChatWithTools`, `ChatWithHistoryStream` |
+| `cmd/openaiagent/` | Tool Use + Streaming | Major: tool calling loop, SSE response handler |
+| `internal/a2a/client.go` | Streaming | Add `SendMessageStream` |
+| `internal/a2a/protocol.go` | Streaming + Artifacts | Add streaming event types, artifact type field |
+| `internal/executor/executor.go` | Streaming | Add streaming path in `runSubtask` |
+| `web/lib/store.ts` | Streaming + Artifacts | Handle new event types |
+| `web/lib/types.ts` | All features | New type definitions |
+| `web/components/chat/ChatMessage.tsx` | Artifacts | Artifact detection + delegation |
+| `cmd/server/main.go` | Webhooks | Register new route |
+
+### Unmodified Packages
+
+These packages need zero changes:
+
+| Package | Why Unchanged |
+|---------|---------------|
+| `internal/events/broker.go` | Generic pub/sub, already handles any event type |
+| `internal/events/store.go` | Only persists events executor explicitly saves |
+| `internal/handlers/stream.go` | Generic SSE writer, streams any broker events |
+| `internal/orchestrator/` | Plans tasks, unaware of how agents execute |
+| `internal/policy/` | Evaluates plans, unaware of agent internals |
+| `internal/audit/` | Logs whatever the executor tells it to log |
+| `internal/auth/` | Authentication layer, unaffected |
+| `web/lib/sse.ts` | Generic SSE parser, handles any event type |
+| `web/lib/api.ts` | May need new API functions for webhook management |
+
+---
+
+## Build Order (Dependency-Driven)
+
+The features have this dependency graph:
+
+```
+Tool Use (independent)  ─────────────────┐
+                                          ├──> All features complete
+Artifact Rendering (independent) ────────┤
+                                          │
+Streaming Output ────────────────────────┤
+  (depends on tool use for meaningful    │
+   streaming demo, but not technically   │
+   dependent)                            │
+                                          │
+Inbound Webhooks (independent) ──────────┘
+```
+
+**Recommended build order:**
+
+1. **Agent Tool Use** -- Build first because it transforms agents from chat-only to actually useful. Every other feature is more impressive when agents produce real data.
+
+2. **Artifact Rendering** -- Build second because tool use output (web search results, data analysis) needs rich rendering to look good. This is frontend-only after agents start producing structured output.
+
+3. **Streaming Output** -- Build third because it is the most complex and benefits from tool use being done (watching an agent search the web and type results is the "wow moment"). Also, artifact rendering should be in place before streaming delivers artifacts incrementally.
+
+4. **Inbound Webhooks** -- Build last because it is fully independent and adds a new entry point rather than enhancing the core flow. It is the least dependent on other features.
+
+### Phase Breakdown Within Features
+
+**Tool Use (3 sub-phases):**
+1. `internal/llm/tools.go` -- tool types, web search implementation
+2. `internal/llm/openai.go` -- `ChatWithTools` method
+3. `cmd/openaiagent/` -- integrate tools into agent roles
+
+**Artifact Rendering (3 sub-phases):**
+1. Agent prompt engineering for structured output
+2. Executor artifact metadata extraction + message metadata
+3. Frontend artifact card components
+
+**Streaming (4 sub-phases):**
+1. `cmd/openaiagent/` -- SSE response for `tasks/sendSubscribe`, OpenAI streaming
+2. `internal/a2a/streaming.go` -- SSE reader for A2A client
+3. `internal/executor/` -- streaming path in `runSubtask`, relay to broker
+4. Frontend -- `StreamingMessage` component, store handler
+
+**Inbound Webhooks (2 sub-phases):**
+1. Backend: handler, ingestion logic, provider parsers, migration
+2. Frontend: webhook trigger management UI
 
 ---
 
 ## Anti-Patterns to Avoid
 
-### Anti-Pattern: Polling Agent Status from Frontend
+### Anti-Pattern 1: Coupling Tool Execution to A2A Protocol
+**What:** Exposing tool calls as A2A protocol messages between executor and agent.
+**Why bad:** Tool use is internal to the agent. The A2A protocol does not define tool call routing. Leaking tool internals across the protocol boundary creates tight coupling.
+**Instead:** Tool execution stays inside the agent binary. The A2A response returns final results, optionally with tool metadata in artifact parts.
 
-**What:** Front-end timer calling `GET /api/agents` every N seconds to refresh status.
+### Anti-Pattern 2: Persisting Streaming Tokens
+**What:** Saving every streaming chunk to the events table.
+**Why bad:** A single agent response can generate hundreds of chunks. This would bloat the events table and slow SSE replay on reconnection.
+**Instead:** Streaming chunks go through the broker only (ephemeral). The final complete message is persisted as a single `message` event, same as today.
 
-**Why bad:** Creates thundering herd at 60s intervals (every connected client fires simultaneously). Produces stale data between polls. Already exists in some places in the codebase — do not extend this approach.
+### Anti-Pattern 3: Modifying the Broker for Streaming
+**What:** Adding special streaming-aware buffering or deduplication to the broker.
+**Why bad:** The broker is deliberately simple (fan-out to channels). Adding streaming logic increases complexity and coupling.
+**Instead:** The executor is responsible for the streaming relay logic. The broker just publishes events.
 
-**Instead:** SSE push from `/api/agents/stream`. Frontend receives updates only when state changes.
-
-### Anti-Pattern: Storing Derived State in Database
-
-**What:** Adding `activity_status` column to agents table, written by executor on every subtask state change.
-
-**Why bad:** Creates a write-heavy column requiring locks. Executor already fires SSE events on subtask state change — the derived state can be reconstructed from those events. Adds synchronization complexity for no benefit.
-
-**Instead:** Derive from subtask counts. Broadcast via events.
-
-### Anti-Pattern: Multiple SSE Connections per Component
-
-**What:** Each component independently opens an SSE connection for its data.
-
-**Why bad:** Browser HTTP/1.1 allows 6 connections per origin. Even with HTTP/2 multiplexing, unnecessary connections waste server-side goroutines and broker subscriber slots. The existing design wisely uses one SSE connection per conversation. Do not create per-agent SSE connections in AgentCard.
-
-**Instead:** Single global `/api/agents/stream`. All agent status consumers read from `agentStatusStore`.
-
-### Anti-Pattern: LLM for Template Matching at Creation Time
-
-**What:** Calling Anthropic API to semantically match task description against templates during task creation.
-
-**Why bad:** Adds 1-3s latency to the task creation critical path. Costs money per keystroke if called while typing. Templates are a developer tool feature — users can tolerate keyword matching quality.
-
-**Instead:** Keyword overlap scoring in Go. Fast, free, good enough for the use case.
-
-### Anti-Pattern: Blocking Sub-Agent Dispatch in HTTP Handler
-
-**What:** `POST /api/conversations/{id}/messages` handler waits synchronously for the A2A agent response before returning.
-
-**Why bad:** A2A agent invocations can take 5-30 seconds. The HTTP connection would hang. The existing pattern (fire-and-forget to goroutine, respond via SSE) must be preserved.
-
-**Instead:** Handler returns 202 Accepted immediately. Agent processing happens in background. Response arrives via SSE as a message event.
+### Anti-Pattern 4: Single Webhook Endpoint for All Providers
+**What:** One endpoint that inspects headers to determine the source.
+**Why bad:** Different providers have different security validation, different payload formats, and different retry behaviors. A single endpoint becomes a complex router.
+**Instead:** Use `POST /api/webhooks/ingest/{source}` where `{source}` routes to provider-specific validation and parsing.
 
 ---
 
 ## Scalability Considerations
 
-| Concern | Current (1-5 users) | At 50 concurrent users |
-|---------|---------------------|----------------------|
-| Agent status SSE | One broker topic, all subscribers | Same — broker is O(subscribers), not O(agents) |
-| Parallel task monitoring | 6 SSE connections per user | Cap pinned tasks at 6; HTTP/2 multiplexes |
-| Template suggestion | Full table scan (< 100 templates) | Add GIN index on template name + pg_trgm if slow |
-| Sub-agent dispatch | Sequential A2A call in goroutine | Goroutine per dispatch, existing per-agent concurrency limits apply |
-| HealthChecker interval | 60s | Sufficient; increase to 120s if load grows |
+| Concern | Current (100 users) | At 10K users | Notes |
+|---------|---------------------|--------------|-------|
+| Streaming memory | One goroutine per active subtask stream | Consider connection pooling | Each A2A stream holds an open HTTP connection |
+| Streaming fan-out | Broker channels, 64-buffer | Buffer pressure under high fan-out | May need larger buffer for streaming events |
+| Tool execution latency | Web search: 1-3s per call | Tool execution is per-agent, scales with agent count | No shared resource contention |
+| Inbound webhook throughput | Direct task creation | Queue webhook processing | At scale, async processing prevents webhook timeouts |
+| Artifact rendering | Client-side rendering | Still client-side | No server cost for artifact rendering |
 
 ---
 
 ## Sources
 
-- A2A Protocol Specification: task states (WORKING, INPUT_REQUIRED, COMPLETED, FAILED, CANCELED), SSE streaming patterns — [a2a-protocol.org/latest/specification](https://a2a-protocol.org/latest/specification/) — MEDIUM confidence (spec is authoritative but task state enumeration was partial in retrieved content)
-- Azure Architecture Center: AI Agent Orchestration Patterns (sequential, concurrent, handoff) — [learn.microsoft.com/azure/architecture/ai-ml/guide/ai-agent-design-patterns](https://learn.microsoft.com/en-us/azure/architecture/ai-ml/guide/ai-agent-design-patterns) — HIGH confidence (official Microsoft docs, updated 2026-03-07)
-- Real-Time Presence Platform patterns (heartbeat, single fanout channel, derived status) — [systemdesign.one/real-time-presence-platform-system-design](https://systemdesign.one/real-time-presence-platform-system-design/) — MEDIUM confidence (community resource, aligns with broker pattern already implemented)
-- Go health aggregation patterns — [oneuptime.com/blog/post/2026-02-01-go-service-health-aggregation](https://oneuptime.com/blog/post/2026-02-01-go-service-health-aggregation/view) — MEDIUM confidence
-- LangGraph human-in-the-loop interrupt pattern — [blog.langchain.com/making-it-easier-to-build-human-in-the-loop-agents-with-interrupt](https://blog.langchain.com/making-it-easier-to-build-human-in-the-loop-agents-with-interrupt/) — MEDIUM confidence (Python-specific, but interrupt/pause/resume pattern applies to Go implementation)
-- Workflow memory and template retrieval — [emergence.ai/blog/learning-from-stored-workflows-retrieval-for-better-orchestration](https://www.emergence.ai/blog/learning-from-stored-workflows-retrieval-for-better-orchestration) — LOW confidence (URL returned 404; finding based on search snippet only)
-- Existing codebase analysis: `internal/a2a/health.go`, `internal/events/broker.go`, `internal/handlers/agent_health.go`, `internal/handlers/templates.go`, `internal/models/agent.go`, `internal/models/template.go`, `web/lib/conversationStore.ts` — HIGH confidence (direct code reading)
-
----
-
-*Architecture research: 2026-04-04*
+- [OpenAI Function Calling Guide](https://developers.openai.com/api/docs/guides/function-calling) -- Tool definition format, response handling
+- [A2A Protocol Specification](https://a2a-protocol.org/latest/specification/) -- Protocol types, message format
+- [A2A Streaming & Async](https://a2a-protocol.org/latest/topics/streaming-and-async/) -- `tasks/sendSubscribe`, SSE event format, `TaskStatusUpdateEvent`, `TaskArtifactUpdateEvent`
+- [OpenAI Streaming Events](https://developers.openai.com/api/reference/resources/chat/subresources/completions/streaming-events) -- Delta format for streaming with tool_calls
+- [trpc-a2a-go](https://pkg.go.dev/trpc.group/trpc-go/trpc-a2a-go/protocol) -- Go reference implementation of A2A streaming types
+- Existing codebase: `internal/a2a/`, `internal/executor/`, `internal/llm/`, `cmd/openaiagent/`, `web/lib/store.ts`

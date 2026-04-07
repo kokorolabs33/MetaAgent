@@ -1,234 +1,227 @@
 # Domain Pitfalls
 
-**Domain:** A2A meta-agent platform — real-time observability, chat interaction, multi-task views, templates
+**Domain:** A2A meta-agent platform — agent tool use, artifact rendering, streaming output, inbound webhooks
 **Project:** TaskHub
-**Researched:** 2026-04-04
-**Milestone scope:** Agent status visualization, enhanced chat intervention, multi-task parallel view, task templates
+**Researched:** 2026-04-06
+**Milestone scope:** v2.0 Wow Moment — function calling, rich artifacts, token streaming, webhook triggers
 
 ---
 
 ## Critical Pitfalls
 
-Mistakes that cause rewrites, data loss, or demo-breaking bugs.
+Mistakes that cause rewrites, data corruption, or architectural dead-ends.
 
 ---
 
-### Pitfall 1: SSE Subscribe-Before-Replay Race Window
+### Pitfall 1: Tool Call Conversation History Corruption
 
-**What goes wrong:** The current `stream.go` subscribes to the broker AFTER replaying historical events from the database. Any event published between the DB read completing and the broker subscription being registered is silently lost. On a busy task this window is real: fast-executing subtasks can complete and publish while the SELECT is still running.
+**What goes wrong:** The existing `internal/llm/openai.go` uses a simple `ChatMessage{Role, Content}` struct. OpenAI function calling requires three additional message types in the conversation history: (1) assistant messages with a `tool_calls` array instead of `content`, (2) `tool` role messages containing the result for each `tool_call_id`, and (3) the model's final response after processing tool results. If the conversation history omits any of these or gets the ordering wrong, the API returns a 400 error or the model hallucinates stale tool results.
 
-**Why it happens:** The natural sequence is "query DB, then subscribe." But events flow continuously from the executor, so this ordering creates a gap.
+**Why it happens:** The current `ChatMessage` struct only has `Role` and `Content` fields. Developers extend it by adding a `Content` field for tool results, forgetting that tool call messages have no `Content` -- they have a `ToolCalls` array. The `tool` role response also requires a `ToolCallID` field that links back to the specific call. This is a multi-field struct redesign, not a simple extension.
 
-**Evidence in codebase:** `internal/handlers/stream.go:53-74` — `ListByTask` runs, then `Broker.Subscribe` is called. If a `subtask.completed` event fires between those two lines, the client never sees it and the DAG shows a wrong state until the next full page refresh.
-
-**Consequences:** DAG nodes frozen in "running" state on the frontend even though execution completed. Users see stale status until they reload.
-
-**Prevention:** Subscribe to the broker first, then replay from DB, then start forwarding live events (draining any that arrived during replay by deduplicating on event ID). The `Last-Event-ID` mechanism already exists for reconnection — extend the same dedup logic to initial load.
-
-**Detection warning signs:**
-- DAG node stuck in "running" state when terminal events are in the DB
-- `subtask.completed` events visible in the audit log but not rendered
-
-**Phase:** Should be addressed in the agent status visualization phase before adding more status granularity.
-
----
-
-### Pitfall 2: Multi-Task Parallel View Hits the HTTP/1.1 SSE 6-Connection Limit
-
-**What goes wrong:** A multi-task dashboard view that opens one `EventSource` per visible task will exhaust the browser's per-domain connection limit (6 under HTTP/1.1) once 3-4 tasks are shown simultaneously. Additional tasks silently get no updates, or earlier connections start timing out. This limit is per browser, not per tab — it applies globally.
-
-**Why it happens:** Browsers enforce this at the network layer. Chrome and Firefox have both marked the increase request as "Won't Fix" for HTTP/1.1. The limit is well-documented but easy to miss when building the feature in dev where only 1-2 tasks are typically open.
-
-**Evidence in codebase:** `web/lib/sse.ts` opens a separate `EventSource` per task ID. The current single-task view is fine; a multi-task dashboard view would immediately be affected.
-
-**Consequences:** Multi-task view works for 2-3 tasks in dev, breaks silently for 4+ in production/demos. SSE connections queue behind each other; tasks show stale status or miss events entirely.
-
-**Prevention — two options (pick one before building the feature):**
-
-Option A: Serve the backend over HTTP/2. Go's `net/http` supports HTTP/2 automatically when TLS is configured; under HTTP/2 the browser multiplexes all SSE streams over a single TCP connection (default 100 streams). For a dev/demo deployment this is the cleanest fix.
-
-Option B: Multiplex SSE at the application layer. Replace per-task `EventSource` with a single `/api/events/stream?tasks=id1,id2,id3` endpoint. The server fans in events from multiple broker subscriptions and tags each event with `task_id`. The frontend routes events to the right store slice by `task_id`.
-
-**Detection warning signs:**
-- Multi-task view works in dev but hangs/freezes in a browser with >2 tabs open
-- Network inspector shows SSE connections in "pending" state
-
-**Phase:** Must be resolved before multi-task parallel view is built — it is a fundamental architecture decision for that feature.
-
----
-
-### Pitfall 3: Agent Status "Online" Indicator Shows Stale State
-
-**What goes wrong:** The `is_online` and `last_health_check` fields in the `agents` table are written by the health poller every 2 minutes (`cmd/server/main.go:116`). An agent that becomes unreachable between poll cycles shows as "online" in the UI for up to 2 minutes. During a live demo with multiple agents, this creates a confusing situation: the DAG shows a subtask failing while the agent status indicator glows green.
-
-**Why it happens:** Health status is pulled on a fixed schedule, not event-driven. The polling interval was hardcoded without considering the user-observable staleness window. The concern is noted in `CONCERNS.md` ("Health Check Polling Every 2 Minutes System-Wide").
-
-**Evidence in codebase:** `cmd/server/main.go:112-118` hardcodes 2-minute interval. `internal/handlers/agent_health.go:28-33` serves `is_online` directly from the DB without any staleness annotation.
-
-**Consequences:** Agent status badge shows green while the agent is actually dead. Users cannot distinguish "agent is healthy" from "we haven't checked yet."
+**Consequences:** Silent conversation corruption where the model "forgets" it called a tool, leading to infinite tool call loops or hallucinated results. In the A2A context, this means an agent appears to work but produces fabricated data, which is worse than a clean failure.
 
 **Prevention:**
-- Add a `staleness_threshold_sec` concept: if `now - last_health_check > threshold`, treat status as "unknown" not "online" in the API response (or in the frontend rendering logic)
-- Add jitter to the health poll so agents don't all flip at the same moment
-- When a subtask fails with an agent-unreachable error, proactively mark that agent `is_online = false` in the same transaction — don't wait for the next poll cycle
+- Redesign `llm.ChatMessage` to support all OpenAI message types: add `ToolCalls []ToolCall`, `ToolCallID string`, and `Name string` fields. Use `json:"omitempty"` liberally so non-tool messages serialize cleanly.
+- Write a conversation history validator that checks: every assistant message with `tool_calls` is followed by exactly one `tool` role message per call ID.
+- Add integration tests that exercise the full tool call round-trip (send -> tool_calls finish_reason -> execute -> tool result -> final response).
 
-**Detection warning signs:**
-- Agent shows "online" in the status panel but has `last_health_check` > 3 minutes ago
-- Subtask failure events cite agent unreachability while the health overview still shows green
+**Detection:** Agent produces output that contradicts the tool's actual return value. API returns `400 Invalid request: messages with role 'tool' must be a response to a preceding message with 'tool_calls'`.
 
-**Phase:** Agent status visualization phase — bake staleness handling in from day one, not as a follow-up.
+**Confidence:** HIGH -- OpenAI's API strictly enforces conversation history structure; this is the most common function calling bug reported in community forums.
 
----
-
-### Pitfall 4: Chat Intervention Into a Running Subtask Produces Silent Race
-
-**What goes wrong:** When a user sends a chat message to intervene in an in-progress subtask, the message arrives in the conversation while the executor is simultaneously running `runSubtask` for that subtask. Both paths attempt to update subtask state and publish SSE events. The executor's state machine does not check for user intervention messages; it overwrites whatever the user communicated.
-
-**Why it happens:** The executor loop (`internal/executor/executor.go:495-700`) polls the A2A agent for task completion and updates subtask status autonomously. There is no shared mutex or interruption signal between the chat send path (`internal/handlers/conversations.go`) and the executor loop. The CONCERNS document already flags `runSubtask` as "complex and tightly coupled."
-
-**Evidence in codebase:** `internal/handlers/conversations.go:290-350` sends messages via DB insert + SSE publish. `internal/executor/executor.go` runs in a goroutine that reads A2A responses and writes subtask state. No coordination between them exists.
-
-**Consequences:**
-- User's intervention message is delivered to the channel but the running subtask ignores it
-- If the frontend shows an "Awaiting intervention" state, it may never clear
-- Concurrent DB writes to the subtask row can produce inconsistent status
-
-**Prevention:**
-- Define a clear intervention contract: user chat messages during execution are "advisory" (visible in channel but don't interrupt execution) vs "directive" (pause the executor, inject input, resume). These require fundamentally different backend plumbing.
-- For advisory chat: the current architecture works — accept the limitation and document it in the UI ("message delivered; agent will see it on next turn")
-- For directive intervention: add an `input_queue` channel to the executor's subtask context, and have the chat handler push to it; the executor polls this channel inside its loop alongside the A2A response poll
-
-**Detection warning signs:**
-- User sends a clarification message, subtask completes with old output anyway
-- `input_required` subtask state appears but chat messages don't unblock it
-
-**Phase:** Enhanced chat interaction phase — decide the intervention model (advisory vs directive) before writing a single line of code. The wrong choice leads to a rewrite.
+**Phase relevance:** Must be addressed in the Tool Use phase, before any streaming or artifact work depends on it.
 
 ---
 
-### Pitfall 5: Template Steps Capture Specific Agent IDs, Breaking Reuse
+### Pitfall 2: Streaming + Tool Calls Delta Accumulation Failure
 
-**What goes wrong:** The `CreateFromTask` handler (`internal/handlers/templates.go:230-320`) copies subtask instructions verbatim from the completed task's plan. If the LLM-generated plan embedded references to specific agent UUIDs in the instruction text (e.g., "ask agent `3e7f...` to review"), those UUIDs are baked into the template. On reuse, those agents may not exist, may be offline, or may be different agents entirely.
+**What goes wrong:** When streaming is enabled and the model decides to call a tool, the response does not arrive as a single JSON blob. Instead, tool call arguments arrive as string deltas across multiple SSE chunks -- the `tool_calls[i].function.arguments` field is split across 10-50+ chunks. Developers either (a) try to parse each delta as complete JSON and crash, or (b) forget to accumulate by tool call index, mixing arguments from parallel tool calls.
 
-More broadly, templates that were captured from a very specific task context ("Write a REST API for the Acme Corp customer portal") will fail when applied to a different context ("Write a REST API for Globex Corp") unless the instructions are parameterized. The current template schema has a `variables` field but `CreateFromTask` populates it as `[]` — it never extracts variables from the instruction text.
+**Why it happens:** The existing `openai.go` client reads the full response body synchronously with `io.ReadAll`. Switching to streaming means handling `data: [DONE]`, `finish_reason: "tool_calls"` vs `finish_reason: "stop"`, and accumulating partial argument strings keyed by `tool_calls[index]`. This is fundamentally different from streaming plain text tokens.
 
-**Why it happens:** Template extraction is implemented as a structural copy of the DAG, not a semantic parameterization of it. This is the natural MVP shortcut, but it produces templates that are single-use in practice.
-
-**Evidence in codebase:** `internal/handlers/templates.go:263-277` — `instruction_template` field is set to `st.Instruction` verbatim. `variables` is initialized to `[]` unconditionally.
-
-**Consequences:**
-- Templates appear to be reusable but silently produce identical tasks with hardcoded context
-- The "experience accumulation" value proposition is undermined if templates cannot generalize
-- Template versions proliferate as users try to manually edit instructions, creating maintenance burden
+**Consequences:** Tool calls with truncated or garbled JSON arguments. Since the arguments are passed to tool execution, this causes either tool execution errors or, worse, partial arguments that happen to be valid JSON but represent the wrong operation (e.g., a search query truncated to a different, valid query).
 
 **Prevention:**
-- Before investing in a rich template UI, decide what "template variable" means: named placeholders like `{{project_name}}` vs user-prompted variables at task creation time vs LLM-derived substitution at planning time
-- Implement a lightweight variable extraction step at template creation: scan instruction text for obvious specifics (project names, URLs, entity names) and offer to convert them to `{{variable_name}}` placeholders
-- Document the current limitation prominently in the UI ("Template captures structure; review instructions before reuse")
+- Build the streaming client as a separate method (`ChatStream` or `ChatWithHistoryStream`) rather than modifying the existing synchronous path.
+- Maintain a `map[int]*ToolCallAccumulator` indexed by `tool_calls[i].index`. Each accumulator concatenates argument deltas until `finish_reason == "tool_calls"`.
+- Only parse the accumulated JSON after the stream completes or hits `finish_reason`.
+- Always validate the accumulated JSON against the tool's schema before executing.
 
-**Detection warning signs:**
-- Users report all tasks created from a template produce the same instructions as the original task
-- Templates list shows many near-duplicate entries with slight instruction variations
+**Detection:** Tool execution fails with JSON parse errors. Or tools receive subtly wrong parameters that produce unexpected results.
 
-**Phase:** Task templates phase — the variable extraction design must happen before building the frontend StepEditor; retrofitting it after the fact requires a schema migration and UI overhaul.
+**Confidence:** HIGH -- This is the single most-reported streaming + function calling integration bug in the OpenAI developer community.
+
+**Phase relevance:** Critical if streaming and tool use are combined. If built in separate phases, the streaming phase must plan for tool call delta handling from day one, even if tools are disabled initially.
+
+---
+
+### Pitfall 3: SSE Broker Channel Buffer Overflow During Token Streaming
+
+**What goes wrong:** The current `events.Broker` uses buffered channels with capacity 64 (`make(chan *models.Event, 64)`). The existing event types (task lifecycle, status changes) produce maybe 5-20 events per subtask. Token-level streaming could produce hundreds or thousands of events per subtask (one per token). When the frontend consumer lags (tab backgrounded, slow render), the channel fills and the broker's `Publish` method silently drops events via its `default` case in the select statement.
+
+**Why it happens:** The broker was designed for coarse-grained lifecycle events, not fine-grained streaming. The drop-on-full design is correct for lifecycle events (the frontend catches up from DB), but token deltas are not persisted to the database -- they are ephemeral. A dropped token delta means a gap in the streamed text that can never be recovered.
+
+**Consequences:** Users see garbled, incomplete text that jumps from one part of a sentence to another. The final "completed" message has the full text (since that comes from the DB), but the streaming UX -- the entire point of the feature -- is broken.
+
+**Prevention:**
+- Do NOT stream individual tokens through the existing event broker. Instead, create a separate streaming channel/mechanism for token deltas.
+- Option A: Dedicated streaming endpoint per subtask that proxies directly from the OpenAI stream to the client SSE connection, bypassing the broker entirely.
+- Option B: Batch tokens into chunks (e.g., 5-10 tokens per event or every 100ms) to reduce event volume by 10-20x while still feeling real-time.
+- Option C: Increase buffer size for streaming-enabled subscriptions and use a ring buffer that overwrites old tokens (newer tokens are more useful than older ones).
+- Persist the final complete text as a regular message event; use streaming only for the in-progress display.
+
+**Detection:** Compare final rendered text against the completed message content. If they differ, tokens were dropped during streaming.
+
+**Confidence:** HIGH -- direct analysis of the existing `broker.go` code at line 25 (buffer size 64) and lines 61-65 (silent drop behavior).
+
+**Phase relevance:** Must be solved before shipping streaming. This is an architectural decision that affects the streaming endpoint design.
+
+---
+
+### Pitfall 4: Inbound Webhook SSRF and Payload Injection
+
+**What goes wrong:** Inbound webhooks accept HTTP requests from external sources (GitHub, Slack, etc.) and use the payload to create tasks. If the webhook handler passes unsanitized payload data into the task title or description, which then flows to the LLM orchestrator, an attacker can inject prompt instructions via the webhook payload. Example: a GitHub issue title containing adversarial instructions becomes the task description sent to the Master Agent.
+
+**Why it happens:** The webhook payload parsing extracts fields like `title`, `body`, `text` from the incoming JSON and maps them to task creation parameters. Without sanitization, the LLM treats attacker-controlled content as instructions.
+
+**Consequences:** Prompt injection via webhook -- an attacker controls what the Master Agent plans and what sub-agents execute. In a tool-use context, this could mean agents performing web searches or other tool actions directed by the attacker.
+
+**Prevention:**
+- Sanitize all webhook-derived text: strip control characters, enforce length limits (e.g., 500 chars for title, 5000 for description), reject payloads with known injection patterns.
+- Wrap webhook-sourced content in clear delimiters in the orchestrator prompt: `[EXTERNAL CONTENT START]...[EXTERNAL CONTENT END]` with instructions to treat it as data, not instructions.
+- Rate-limit inbound webhook endpoints aggressively (e.g., 10 requests/minute per webhook config).
+- Require HMAC signature verification for all inbound webhooks (the existing outbound webhook sender already has HMAC signing in `internal/webhook/sender.go` -- mirror this for inbound).
+- Log all webhook-triggered task creations with the source webhook ID for audit trail.
+
+**Detection:** Audit logs show task descriptions that contain instruction-like language not originating from a human user. Anomalous agent behavior on webhook-triggered tasks.
+
+**Confidence:** HIGH -- prompt injection via webhooks is a well-documented attack vector in LLM-integrated systems (OWASP LLM01:2025).
+
+**Phase relevance:** Must be addressed in the webhook phase. Security cannot be deferred.
+
+---
+
+### Pitfall 5: Artifact Type Explosion Without a Schema Contract
+
+**What goes wrong:** Different agents produce different artifact types (tables, code diffs, reports, search results, charts). Without a defined artifact schema, the frontend ends up with a growing switch statement that checks for heuristic patterns (`if data has rows and columns, render as table`). Each new artifact type requires frontend changes, and malformed artifacts crash the renderer.
+
+**Why it happens:** The A2A protocol defines `TextPart`, `DataPart`, and `FilePart` as generic containers but does not prescribe internal structure for `DataPart`. Teams add artifact types ad-hoc ("the search agent returns results as an array") without a shared schema registry. The existing `a2a.MessagePart` struct in `internal/a2a/client.go:81-84` uses `Data any` -- completely untyped.
+
+**Consequences:** Frontend crashes on unexpected artifact shapes. Agents produce slightly different formats for the same concept (one uses `{rows, columns}`, another uses `{headers, data}`). Maintenance burden grows linearly with each new agent or tool type.
+
+**Prevention:**
+- Define a finite set of artifact types with explicit JSON schemas: `table`, `code`, `markdown`, `search_results`, `key_value`, `error`. Each has a `type` discriminator field.
+- Enforce the schema at the agent level: the agent binary validates its output against the schema before returning it in the A2A artifact.
+- Build a single `ArtifactRenderer` React component that dispatches on `type` with a fallback to raw JSON display for unknown types -- never crash, always degrade gracefully.
+- Store artifact schemas in a shared location (e.g., `internal/a2a/artifacts.go` for Go, `web/lib/artifact-types.ts` for TypeScript) that both sides import.
+
+**Detection:** Frontend console errors when rendering artifacts. Agents returning artifacts that render as raw JSON instead of rich cards.
+
+**Confidence:** HIGH -- this is the most common mistake in multi-agent systems with heterogeneous output types.
+
+**Phase relevance:** Must be defined before building artifact rendering UI. The schema is the contract between the agent tool-use phase and the artifact rendering phase.
 
 ---
 
 ## Moderate Pitfalls
 
-Mistakes that degrade quality or create tech debt, but do not require rewrites.
+---
+
+### Pitfall 6: Poll Loop Incompatibility with Streaming A2A Responses
+
+**What goes wrong:** The current executor uses `pollUntilTerminal()` with a 2-second interval to check agent status (`internal/executor/executor.go:750`). If agents switch to streaming responses (A2A `tasks/sendSubscribe`), the executor still polls, missing the real-time stream entirely. Worse, if a streaming agent returns `state: "working"` to the initial `tasks/send` and expects the client to subscribe for updates, the poll loop works but adds unnecessary latency (up to 2 seconds per token batch).
+
+**Why it happens:** The executor was designed for request-response A2A interactions. Streaming A2A is a different transport (SSE from agent to executor) that requires the executor to act as an SSE client, not a poller.
+
+**Prevention:**
+- Keep the poll loop as the default for non-streaming agents (backward compatibility).
+- Check the agent's `AgentCard.capabilities.streaming` flag before deciding the communication strategy.
+- For streaming agents, implement an SSE client in the executor that subscribes to the agent's stream and forwards events through the platform's broker.
+- Do not try to retrofit streaming into the poll loop -- they are fundamentally different patterns.
+
+**Detection:** Streaming agents work but feel sluggish (2-second update intervals instead of real-time). Or streaming agents hang because their SSE stream is never consumed.
+
+**Confidence:** MEDIUM -- depends on whether agents implement A2A streaming or continue using request-response with async polling.
+
+**Phase relevance:** Can be deferred if agents use request-response initially. Must be addressed before claiming A2A streaming compliance.
 
 ---
 
-### Pitfall 6: Zustand Event Handler Captures Stale Store Snapshot
+### Pitfall 7: Tool Execution Timeout Cascading Through DAG
 
-**What goes wrong:** The `connectSSE` function in `store.ts` captures `get().handleEvent` as a closure at subscription time. If the store's `handleEvent` method references state that changes after subscription (e.g., `currentTask` is replaced), the closure holds stale values. For the multi-task parallel view, this is more acute: each task's SSE connection must dispatch to the right slice of state, but a shared store makes this fragile.
+**What goes wrong:** A tool call (e.g., web search) hangs or takes 30+ seconds. The agent's A2A task stays in `working` state. The executor's `pollUntilTerminal` has a 5-minute timeout (`internal/executor/executor.go:756`), so it waits. Meanwhile, downstream subtasks that depend on this one are blocked. If multiple subtasks in the DAG hit slow tools, the entire task can take 10-15 minutes for what should be a 1-minute operation.
 
-**Why it happens:** Zustand's `get()` is called lazily inside event callbacks, which is correct for the current single-task view. But `connectSSE` passes a bound callback: `(event) => get().handleEvent(event as ...)` — this is fine as long as `handleEvent` itself always calls `get()` internally. The risk is subtle: any `set()` inside `handleEvent` that reads state from the closure (not from `get()`) can capture a stale snapshot.
-
-**Evidence in codebase:** `web/lib/store.ts:135-141` — the SSE connection passes an arrow function that calls `get().handleEvent`. The `handleEvent` function at line 151 reads `const { currentTask } = get()` which is correct. The pitfall is latent: any future developer who refactors `handleEvent` to accept `currentTask` as a parameter (for performance) will introduce the bug.
-
-**Consequences:** Events for task A are processed against the state of task B when the user navigates between tasks quickly. Subtask status updates land on the wrong task in the UI.
+**Why it happens:** The current system treats all agent work as opaque -- it has no visibility into whether the agent is thinking, waiting for a tool, or stuck. Tool execution adds a new failure mode (external service timeouts) that the DAG executor was not designed for.
 
 **Prevention:**
-- Add a task-ID guard at the top of `handleEvent`: if `event.task_id !== currentTask?.id`, drop the event (or route it to the correct task store slice)
-- For the multi-task view, use a `Map<taskId, taskState>` store shape rather than a single `currentTask`
-- Document the `get()` vs closure rule in a comment next to `handleEvent`
+- Add per-tool execution timeouts (e.g., 15 seconds for web search) enforced at the agent level, not the executor level.
+- Have agents report intermediate status via A2A messages: `"Searching the web..."`, `"Processing results..."` -- this gives the executor and user visibility.
+- Add a subtask-level timeout that is shorter than the 5-minute poll timeout (e.g., 3 minutes for tool-enabled subtasks).
+- Implement graceful tool failure: if a tool times out, the agent should return a completed response noting the tool failure rather than hanging indefinitely.
 
-**Detection warning signs:**
-- Rapidly switching between task detail views causes one task's events to appear in another
-- DAG nodes update for a task that is not currently displayed
+**Detection:** Task execution times spike dramatically after enabling tool use. Subtasks sit in `working` state for minutes.
 
-**Phase:** Multi-task parallel view phase — restructure the store shape before adding the second task pane, not after.
+**Confidence:** MEDIUM -- the severity depends on tool reliability. Web search tools are generally fast, but custom tools or chained tool calls can be slow.
+
+**Phase relevance:** Address during the tool use phase. Build timeout handling into the agent binary from the start.
 
 ---
 
-### Pitfall 7: SSE Broker Channel Drop Under Load Erodes Observability
+### Pitfall 8: Frontend SSE Reconnection Loses Streaming Context
 
-**What goes wrong:** The broker (`internal/events/broker.go:52-68`) silently drops events when a subscriber's channel buffer (64 events) is full. The comment "they can catch up from DB" is correct for reconnection scenarios, but the frontend's `EventSource` does not automatically re-fetch state on drop — it only replays from `Last-Event-ID` on reconnection. A slow client that can't process 64 events fast enough will silently miss status updates without triggering a reconnect.
+**What goes wrong:** The existing SSE client (`web/lib/sse.ts`) relies on `EventSource` auto-reconnection with `Last-Event-ID`. For lifecycle events, this works because all events are persisted to the database and replayed on reconnection. Token streaming events are ephemeral (not stored in DB). When a reconnection happens mid-stream, the frontend gets the replay of lifecycle events but loses all streamed tokens, showing a blank or incomplete agent response until the final completed message arrives.
 
-**Why it happens:** The drop-on-full design is intentional for backpressure, but the implicit assumption is that the client reconnects and replays. In practice, the `EventSource` only reconnects on TCP disconnect — a full channel that never closes the connection does not trigger reconnect.
-
-**Evidence in codebase:** `internal/events/broker.go:61-67` — `select { case ch <- event: default: }`. No drop counter, no log line.
-
-**Consequences:** During heavy subtask execution (many parallel agents writing events fast), the frontend progressively falls behind real state without notifying the user. The DAG appears partially updated.
+**Why it happens:** `EventSource` reconnects automatically but the server can only replay persisted events. Token deltas are not persisted (storing every token in PostgreSQL would be absurd for performance).
 
 **Prevention:**
-- Add a drop counter per subscriber; if drops exceed N within a window, proactively close the SSE connection so the client reconnects and replays from `Last-Event-ID`
-- Or: increase the buffer size from 64 to 256 for the agent-status use case where burst events are expected
-- Add a log line on every drop for observability: `log.Printf("broker: dropped event %s for subscriber (channel full)", event.ID)`
+- On reconnection, query the current subtask state from the API. If a subtask is `working`, fetch its partial output (if the agent stores it) or show a "streaming in progress, reconnecting..." placeholder.
+- Store partial accumulated text in a Zustand store keyed by subtask ID. On reconnection, resume appending to the existing text rather than starting fresh.
+- Consider a separate dedicated SSE connection for streaming content that is independent of the lifecycle event stream. This avoids mixing ephemeral and persistent data on the same channel.
 
-**Detection warning signs:**
-- Frontend DAG shows mixed states (some subtasks completed, some stuck at prior state) during heavy execution
-- No `Last-Event-ID` reconnect traffic visible in network inspector despite events having been published
+**Detection:** Users report seeing blank agent outputs that suddenly "snap" to the final text. Happens more frequently on spotty networks.
 
-**Phase:** Agent status visualization phase — test with simulated event bursts before declaring the feature complete.
+**Confidence:** MEDIUM -- direct analysis of `web/lib/sse.ts` shows EventSource auto-reconnection is the only recovery mechanism.
+
+**Phase relevance:** Must be addressed in the streaming phase, specifically in the frontend implementation.
 
 ---
 
-### Pitfall 8: Template Execution Tracking Silently Fails
+### Pitfall 9: Webhook Replay and Duplicate Task Creation
 
-**What goes wrong:** CONCERNS.md documents that template version tracking inside the executor (`internal/executor/executor.go`) uses `_ =` to discard DB errors. The `template_executions` table — which records outcome, replan count, and HITL interventions per execution — is the core data source for "experience accumulation." If those inserts silently fail, the template improvement loop has no data.
+**What goes wrong:** External services (GitHub, Slack) retry webhook deliveries if they do not receive a 200 response within their timeout window (typically 5-10 seconds). If task creation takes longer than this (e.g., because the orchestrator LLM call takes 8 seconds), the webhook sender retries, and a second identical task is created.
 
-**Why it happens:** The broader pattern of silenced DB errors (documented across ~18 locations in `executor.go`) was carried forward to the template tracking code without special-casing it.
-
-**Evidence in codebase:** CONCERNS.md `Database Query Errors Silently Ignored`, specifically `internal/executor/executor.go:86,125,141,166,194,421,...`. Template version tracking is among the affected operations.
-
-**Consequences:** The "experience accumulation" feature ships but accumulates nothing. Template execution history is empty. No data feeds template improvement recommendations.
+**Why it happens:** The natural approach processes webhook payloads synchronously -- creates the task and waits for planning to begin before responding. The webhook sender times out and retries. Since there is no idempotency check, the retry creates a duplicate task.
 
 **Prevention:**
-- Dedicate a focused error-handling pass to the template execution recording paths specifically
-- These writes are critical for the template feature's value proposition — they should log errors at minimum, or fail the template recording atomically (without failing the task)
-- Add an integration test that verifies a completed task writes a `template_executions` row when a template was used
+- Ack immediately: Return 200/202 as soon as the webhook payload is validated and queued, before any task creation begins. Use a background goroutine or work queue for actual processing.
+- Implement idempotency via a deduplication key: hash the webhook payload (or use the provider's delivery ID like `X-GitHub-Delivery`) and store it in a `webhook_deliveries` table with a TTL. Reject duplicates.
+- Add a unique constraint or dedup check: `INSERT INTO webhook_deliveries (delivery_id) VALUES ($1) ON CONFLICT DO NOTHING` -- if the insert is a no-op, skip processing.
 
-**Detection warning signs:**
-- `template_executions` table is empty after running tasks from templates
-- `ListExecutions` endpoint returns `[]` for templates that have been used
+**Detection:** Duplicate tasks with identical titles created within seconds of each other. Webhook delivery logs on the provider side show retries.
 
-**Phase:** Task templates phase — fix the silent error pattern for template-related DB writes before building the execution history UI.
+**Confidence:** HIGH -- GitHub retries after 10 seconds, Slack after 3 seconds. This is a guaranteed issue if processing takes longer than the retry window.
+
+**Phase relevance:** Must be handled in the webhook phase. Build the ack-first pattern from day one.
 
 ---
 
-### Pitfall 9: GitHub Open-Source Demo Fails on First Clone Due to Environment Coupling
+### Pitfall 10: Parallel Tool Calls Producing Race Conditions in Agent State
 
-**What goes wrong:** The platform's core LLM integration uses `exec.CommandContext()` to spawn the `claude` CLI (documented in CONCERNS.md). A developer who clones the repo to explore the A2A reference implementation must have the Claude CLI installed, authenticated, and in `$PATH` — before they can run a single task. There is no graceful degradation, mock mode, or clear error message if the CLI is absent.
+**What goes wrong:** OpenAI models can issue multiple tool calls in a single response (parallel tool calls). If the agent binary executes them concurrently and both modify shared state (e.g., both write to the conversation history, or both try to produce artifacts), the results can interleave or overwrite each other. The current `cmd/openaiagent/main.go` uses `sync.Mutex` on `taskState` for basic protection, but this does not cover the tool execution phase which happens outside the lock.
 
-**Why it happens:** The CLI dependency is a known MVP shortcut. For internal development it is acceptable. For open-source readiness, it is a first-run blocker for the majority of developers.
-
-**Evidence in codebase:** CONCERNS.md "orchestrator: claude CLI Dependency." `internal/orchestrator/orchestrator.go:135-146`.
-
-**Consequences:** GitHub stars do not convert to "I ran it" experiences. Developers hit a confusing failure (likely a cryptic exec error or a task stuck in "planning") before seeing any agent coordination. The demo value is zero for anyone without the CLI set up.
+**Why it happens:** Developers enable parallel tool calls for performance without considering that tool execution may have side effects or ordering requirements. The OpenAI API defaults `parallel_tool_calls` to `true`.
 
 **Prevention:**
-- Add a startup check: if the `claude` binary is not found, print a clear setup instruction and optionally exit with an actionable error rather than silently failing at task creation time
-- Add a `--mock-llm` flag or `MOCK_LLM=true` env var that makes the orchestrator return a hardcoded demo plan, enabling the UI/SSE/DAG flow to be explored without any LLM API key
-- Document the dependency prominently in the README with a setup checklist
+- Start with `parallel_tool_calls: false` for safety. Enable parallel execution only after confirming tools are side-effect-free and order-independent.
+- If enabling parallel calls, execute tools concurrently but collect all results before continuing the conversation -- do not interleave tool execution with conversation history updates.
+- Use a dedicated mutex or channel for tool result collection to prevent interleaving.
 
-**Detection warning signs:**
-- Tasks created via the UI get stuck in "planning" status forever
-- No error visible in the UI; error only appears in server logs as an exec failure
+**Detection:** Agents produce garbled output that mixes results from two different tool calls. Conversation history shows tool results in the wrong order.
 
-**Phase:** GitHub open-source readiness phase — this must be resolved before any public launch.
+**Confidence:** MEDIUM -- depends on whether parallel tool calls are enabled. HIGH if they are.
+
+**Phase relevance:** Address during tool use implementation. Set `parallel_tool_calls: false` as the default.
 
 ---
 
@@ -236,79 +229,115 @@ Mistakes that degrade quality or create tech debt, but do not require rewrites.
 
 ---
 
-### Pitfall 10: Unbounded Message History Degrades Chat Panel Performance
+### Pitfall 11: Nginx/Proxy Buffering Silently Breaks Token Streaming
 
-**What goes wrong:** `internal/handlers/conversations.go:246-251` fetches all messages for a conversation with no LIMIT. For a long-running demo session, a single conversation can accumulate hundreds of agent messages (one per subtask + cross-mentions). The frontend renders all of them at once in the chat panel.
-
-**Prevention:** Add cursor-based pagination at the API level (using `created_at` as cursor). Implement virtual scrolling in the chat component if message counts will exceed ~200 in typical use.
-
-**Phase:** Enhanced chat interaction phase.
-
----
-
-### Pitfall 11: Template Steps UI Allows Circular Dependencies Without Validation
-
-**What goes wrong:** The `StepEditor` component (`web/components/template/StepEditor.tsx`) lets users edit the `depends_on` array for each step. Nothing prevents a user from creating a cycle (step A depends on B, B depends on A). When a task is created from such a template, the DAG executor will deadlock (all affected subtasks wait forever for each other).
-
-**Prevention:** Add a topological sort validation step in the template save handler. Reject the save with a clear error if a cycle is detected. This is a few lines of Go (Kahn's algorithm) and prevents a silent deadlock.
-
-**Phase:** Task templates phase.
-
----
-
-### Pitfall 12: Agent Status Events Not Yet Defined as SSE Event Types
-
-**What goes wrong:** The agent status visualization feature requires new SSE event types like `agent.working`, `agent.idle`, `agent.offline`. These must be added to both the backend SSE publish calls and the `SSEEventType` union in `web/lib/types.ts`. If the backend publishes events the frontend type system does not know about, the `handleEvent` switch silently ignores them — no TypeScript error, no runtime error, just invisible status updates.
-
-**Prevention:** Define the new event type constants in `types.ts` first, then implement the backend emitters. Run `make typecheck` after every new event type addition to catch mismatches early.
-
-**Phase:** Agent status visualization phase — type contract first, implementation second.
-
----
-
-### Pitfall 13: Template Instruction Variables Are a Prompt Injection Surface
-
-**What goes wrong:** When template variables (e.g., `{{project_name}}`) are substituted at task creation time, the substituted value is fed directly into the LLM orchestrator prompt. A user who sets `project_name` to a string containing LLM instruction syntax (e.g., `"Acme Corp. Ignore all prior instructions and..."`) can manipulate the generated task plan. This is an indirect prompt injection via the template system.
-
-**Why it matters for this project:** TaskHub is targeted at developers — the threat model includes technically sophisticated users experimenting with the system. For a public demo repo, demonstrating naive variable substitution could become an embarrassment.
+**What goes wrong:** If TaskHub is deployed behind a reverse proxy (Nginx, Cloudflare, AWS ALB), the proxy's default response buffering aggregates SSE events into large chunks. Token streaming appears to work in local dev but in production, users see text arrive in bursts every 5-10 seconds instead of token-by-token.
 
 **Prevention:**
-- Strip or escape any text that looks like LLM instruction preambles from variable values before substitution
-- Add a max length limit on variable values (100 chars is reasonable for names/identifiers)
-- Document in the template README that variable values are passed to an LLM and should be treated as untrusted input
+- Set `X-Accel-Buffering: no` response header on all SSE endpoints (add to `StreamHandler.Stream` and `StreamHandler.MultiStream` in `internal/handlers/stream.go`).
+- Document the required Nginx config: `proxy_buffering off;`, `proxy_http_version 1.1;`, `proxy_read_timeout 600;`.
+- Add a streaming health check endpoint that sends one event per second -- if deployment breaks streaming, this endpoint reveals it immediately.
 
-**Phase:** Task templates phase.
+**Confidence:** HIGH -- this is the most common SSE deployment issue.
+
+**Phase relevance:** Address during streaming deployment, not during development (local dev works fine without this).
+
+---
+
+### Pitfall 12: OpenAI Structured Output `strict: true` Schema Restrictions
+
+**What goes wrong:** When using `strict: true` for function parameters (recommended for reliable tool arguments), OpenAI enforces that all object properties must be `required`, `additionalProperties` must be `false`, and the schema must not use `default` values. Developers define schemas with optional fields and get cryptic 400 errors.
+
+**Prevention:**
+- Always make all properties required in tool schemas. Use sentinel values (empty string, -1) instead of omitting optional fields.
+- Set `additionalProperties: false` on every nested object, not just the top level.
+- Test tool schemas against the OpenAI schema validation endpoint before integrating.
+
+**Confidence:** HIGH -- documented requirement that is frequently overlooked.
+
+**Phase relevance:** Address during tool schema definition in the tool use phase.
+
+---
+
+### Pitfall 13: Artifact Rendering XSS via Markdown or HTML in Agent Output
+
+**What goes wrong:** Agents return markdown or HTML content in artifacts. If the frontend renders this with an unsanitized markdown renderer, a compromised or prompt-injected agent can inject JavaScript into the UI.
+
+**Prevention:**
+- Use `react-markdown` (already in the project at `web/package.json`) which does not render raw HTML by default.
+- Explicitly disable rendering of `script`, `iframe`, `object`, `embed` elements in any custom renderers.
+- For code blocks in artifacts, use a syntax highlighter that escapes HTML entities.
+- Never render agent-generated content as raw HTML.
+
+**Confidence:** HIGH -- the project already uses react-markdown which is safe by default, but new artifact renderers must maintain this discipline.
+
+**Phase relevance:** Address during artifact rendering implementation.
+
+---
+
+### Pitfall 14: LLM Client Abstraction Leaking OpenAI-Specific Concepts
+
+**What goes wrong:** The tool calling implementation is built directly against OpenAI's `tool_calls` format. If TaskHub later needs to support other LLM providers (Anthropic tool_use, Google function_calling), every tool-related function is OpenAI-specific and must be rewritten.
+
+**Prevention:**
+- Define a provider-agnostic tool call interface in `internal/llm/` (e.g., `ToolCall{Name, Arguments}`, `ToolResult{CallID, Output}`).
+- The OpenAI-specific serialization (delta accumulation, `tool_calls` array format) stays in an OpenAI adapter layer.
+- The agent binary and executor interact with the generic interface.
+
+**Confidence:** LOW -- this is a forward-looking concern. TaskHub currently only uses OpenAI, and premature abstraction can slow development. A clean separation of the OpenAI HTTP layer from tool execution logic is sufficient.
+
+**Phase relevance:** Consider during tool use design, but do not over-engineer. Keep the OpenAI HTTP details contained in `internal/llm/openai.go`.
+
+---
+
+### Pitfall 15: Webhook Secret Rotation Causes Downtime
+
+**What goes wrong:** When rotating webhook secrets (for security best practices), all previously configured webhooks using the old secret start failing HMAC verification. If there is no grace period where both old and new secrets are accepted, webhook-triggered tasks stop working during rotation.
+
+**Prevention:**
+- Support dual secrets: store both `current_secret` and `previous_secret` in the webhook config. Accept either during verification.
+- Add a `secret_expires_at` field for the previous secret so it is automatically retired.
+- Log secret rotation events in the audit trail.
+
+**Confidence:** MEDIUM -- only relevant after webhooks are in production and secrets need rotation.
+
+**Phase relevance:** Can be deferred to a follow-up, but design the schema with the `previous_secret` column from day one.
 
 ---
 
 ## Phase-Specific Warnings
 
 | Phase Topic | Likely Pitfall | Mitigation |
-|-------------|---------------|------------|
-| Agent status visualization | Stale "online" indicator (Pitfall 3) | Add staleness threshold to API + frontend rendering |
-| Agent status visualization | SSE subscribe/replay race (Pitfall 1) | Subscribe first, replay second, dedup by event ID |
-| Agent status visualization | Event drops during burst (Pitfall 7) | Add drop counter, increase buffer, log drops |
-| Agent status visualization | Missing SSE event type constants (Pitfall 12) | Define types.ts entries before backend emitters |
-| Enhanced chat interaction | Intervention race with executor (Pitfall 4) | Decide advisory vs directive model before any code |
-| Enhanced chat interaction | Unbounded message history (Pitfall 10) | Add pagination before building infinite scroll UI |
-| Multi-task parallel view | HTTP/1.1 SSE 6-connection limit (Pitfall 2) | Decide HTTP/2 vs multiplexed endpoint before building |
-| Multi-task parallel view | Stale closure in Zustand store (Pitfall 6) | Restructure store to `Map<taskId, state>` shape |
-| Task templates | Template captures specific context not structure (Pitfall 5) | Design variable extraction before building StepEditor |
-| Task templates | Silent template execution tracking failure (Pitfall 8) | Fix silenced DB errors for template recording paths |
-| Task templates | Circular dependency in step editor (Pitfall 11) | Add DAG cycle detection in template save handler |
-| Task templates | Prompt injection via template variables (Pitfall 13) | Add variable length limits + input sanitization |
-| GitHub open-source readiness | First-clone failure due to CLI dependency (Pitfall 9) | Add startup check + mock LLM mode |
+|---|---|---|
+| Agent Tool Use | Conversation history corruption (P1) | Redesign ChatMessage struct before building tool loop |
+| Agent Tool Use | Parallel tool call races (P10) | Default to `parallel_tool_calls: false` |
+| Agent Tool Use | Tool timeout cascading (P7) | Per-tool timeouts with graceful failure at agent level |
+| Agent Tool Use | OpenAI strict schema rules (P12) | Test schemas early, all fields required |
+| Artifact Rendering | Type explosion without schema (P5) | Define artifact schema contract first, before any UI |
+| Artifact Rendering | XSS via agent output (P13) | Use react-markdown defaults, no raw HTML rendering |
+| Artifact Rendering | Abstraction leak (P14) | Keep OpenAI wire format in llm package, expose generic interface |
+| Streaming Output | Broker buffer overflow (P3) | Separate streaming channel, do not reuse event broker |
+| Streaming Output | Tool call delta accumulation (P2) | Build accumulator with index-keyed map, validate before execute |
+| Streaming Output | SSE reconnection gap (P8) | Store partial text in Zustand, handle reconnect gracefully |
+| Streaming Output | Proxy buffering (P11) | X-Accel-Buffering header, document deploy config |
+| Streaming Output | Poll loop vs streaming (P6) | Check agent capabilities, support both patterns |
+| Inbound Webhooks | Prompt injection via payload (P4) | Sanitize payloads, HMAC verification, content delimiters |
+| Inbound Webhooks | Duplicate tasks from retries (P9) | Ack-first pattern with idempotency key |
+| Inbound Webhooks | Secret rotation downtime (P15) | Dual-secret support in schema from day one |
 
 ---
 
 ## Sources
 
-- Codebase analysis: `internal/events/broker.go`, `internal/handlers/stream.go`, `internal/handlers/templates.go`, `internal/executor/executor.go`, `web/lib/store.ts`, `web/lib/sse.ts`
-- Project context: `.planning/PROJECT.md`, `.planning/codebase/CONCERNS.md`
-- A2A Protocol Specification — event ordering and streaming requirements: https://a2a-protocol.org/latest/specification/
-- Browser SSE 6-connection limit (Chrome bug tracker, marked Won't Fix): https://issues.chromium.org/issues/40329530
-- SSE HTTP/2 multiplexing solution: https://medium.com/@kaitmore/server-sent-events-http-2-and-envoy-6927c70368bb
-- Multi-agent failure modes (error propagation, race conditions): https://medium.com/@rakesh.sheshadri44/the-dark-psychology-of-multi-agent-ai-30-failure-modes-that-can-break-your-entire-system-023bcdfffe46
-- LLM agent prompt injection via workflow templates (OWASP LLM01:2025): https://genai.owasp.org/llmrisk/llm01-prompt-injection/
-- SSE event deduplication on reconnect: https://tigerabrodi.blog/server-sent-events-a-practical-guide-for-the-real-world
-- Context window overflow in multi-agent systems: https://redis.io/blog/context-window-overflow/
+- [OpenAI Function Calling Guide](https://platform.openai.com/docs/guides/function-calling) -- tool schema requirements, parallel_tool_calls, strict mode
+- [OpenAI Streaming Events Reference](https://developers.openai.com/api/reference/resources/chat/subresources/completions/streaming-events) -- delta accumulation format, finish_reason values
+- [OpenAI Community: Streaming + Function Calls](https://community.openai.com/t/help-for-function-calls-with-streaming/627170) -- real-world developer struggles with tool call streaming
+- [OpenAI Conversation State Guide](https://platform.openai.com/docs/guides/conversation-state) -- tool message ordering requirements
+- [A2A Protocol Specification](https://a2a-protocol.org/latest/specification/) -- streaming operations, artifact format, Part types
+- [Webhook Security Vulnerabilities (Hookdeck)](https://hookdeck.com/webhooks/guides/webhook-security-vulnerabilities-guide) -- HMAC, replay prevention, idempotency
+- [Webhook Security Best Practices (Hooque)](https://hooque.io/guides/webhook-security/) -- dual secret rotation, timestamp windows
+- [Webhook Replay Prevention (webhooks.fyi)](https://webhooks.fyi/security/replay-prevention) -- timestamp window + idempotency store
+- [SSE Streaming LLM Guide (Pockit)](https://pockit.tools/blog/streaming-llm-responses-web-guide/) -- SSE infrastructure, buffering issues, Go implementation patterns
+- [SSE Behind Nginx (Medium)](https://medium.com/@dsherwin/surviving-sse-behind-nginx-proxy-manager-npm-a-real-world-deep-dive-69c5a6e8b8e5) -- proxy_buffering, chunk boundary corruption
+- [Nginx SSE Configuration (OneUptime)](https://oneuptime.com/blog/post/2025-12-16-server-sent-events-nginx/view) -- proxy_buffering off, X-Accel-Buffering header
+- Direct codebase analysis: `internal/events/broker.go` (buffer size 64, silent drop), `internal/llm/openai.go` (ChatMessage struct), `internal/executor/executor.go` (pollUntilTerminal), `cmd/openaiagent/main.go` (taskState mutex scope), `web/lib/sse.ts` (EventSource reconnection), `internal/a2a/client.go` (MessagePart Data any), `internal/webhook/sender.go` (HMAC signing pattern)

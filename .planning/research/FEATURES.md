@@ -1,147 +1,308 @@
 # Feature Landscape
 
-**Domain:** Open-source A2A multi-agent orchestration platform (developer showcase)
-**Researched:** 2026-04-04
-**Confidence:** HIGH (existing codebase verified + ecosystem cross-referenced)
+**Domain:** Multi-agent platform — agent tool use, artifact rendering, streaming output, inbound webhooks
+**Researched:** 2026-04-06
+**Milestone:** v2.0 Wow Moment
+**Focus:** New features only (existing foundation assumed built and working)
 
 ---
 
-## Context: What TaskHub Already Has
+## Context: What Already Exists
 
-The following are already implemented and NOT categorized below (they are baseline):
+The following are built and working. This document does NOT re-categorize them:
 
-- Task creation with LLM-driven DAG decomposition
-- A2A protocol agent communication (HTTP polling + native adapters)
-- SSE real-time event streaming
-- DAG visualization (React Flow)
-- Agent registration and management
-- @mention cross-agent collaboration (up to 3 rounds)
-- Audit logging with token counts and cost estimates
-- Policy-driven execution with approval workflows
-- Adaptive replanning on subtask failure
-- Conversation memory per contextId
-- Master Agent chat interface
+- Master Agent decomposes tasks into DAG subtasks via LLM
+- Team agents communicate via A2A protocol (HTTP polling + native)
+- Real-time SSE streaming with DAG visualization
+- Agent status indicators (online/working/idle/offline)
+- Chat intervention (@mention agents mid-execution)
+- Parallel multi-task dashboard with live status
+- Templates, policies, analytics, audit pages
+- OpenAI-powered task decomposition (gpt-4o-mini via hand-rolled HTTP client)
+- Outbound webhook infrastructure (CRUD, HMAC signing, delivery)
+- Custom markdown renderer in ChatMessage.tsx (headings, tables, lists, code fences, @mentions)
 
-This document focuses exclusively on what comes **next**.
+**The gap:** Agents currently only produce text via single-shot chat. No tool use, no structured artifacts, no streaming, no inbound event triggers. The demo feels like "agents chatting" rather than "agents working."
 
 ---
 
 ## Table Stakes
 
-Features a developer cloning TaskHub will expect. Missing any of these and the repo reads as unfinished or hard to evaluate.
+Features users of multi-agent platforms expect in 2026. Missing any of these makes the "agents doing real work" claim feel hollow.
 
-| Feature | Why Expected | Complexity | Notes |
-|---------|--------------|------------|-------|
-| **Agent status indicators** (online/idle/working/offline) | Every agent platform — LangSmith, CrewAI, MindStudio — shows live agent state. Developers expect to see if agents are reachable before trusting the system | Low–Med | Color-coded dot + label; pulse animation when working. Driven by existing health-checker output. Needs SSE event bridge to frontend |
-| **One-click local startup** (Docker Compose or `make dev`) | Top open-source projects (n8n, Langfuse, Open Agent Platform) all gate GitHub stars on "clone and it works in 2 minutes". TaskHub's current multi-step setup is a barrier | Low | `docker compose up` with seeded demo agents. README hero section. This is the #1 open-source adoption factor |
-| **Comprehensive README with live demo GIF/screenshot** | GitHub's top agentic repos (AutoGen 32k stars, LangGraph 24.8k stars) all feature hero demos. Without one, visitors bounce in 10 seconds | Low | GIF/screenshot of DAG execution + agent chat in action. Badges: build status, license, Go version |
-| **Frontend bug-free interaction** | Broken UI on a demo repo signals "not maintained". Developers judge code quality by what they can click | Med | Existing known bugs must be fixed before any feature work ships to main. This blocks demo-readiness |
-| **Basic task filtering/search on dashboard** | Standard in every workflow tool (Prefect, Airflow). Developers running multiple tasks need to find them | Low | Filter by status (pending/running/completed/failed). Client-side is fine for v1 |
-| **Task detail — subtask timeline/trace view** | LangSmith and Langfuse both surface execution traces as the primary debug surface. Developers will look for "what did each agent actually do?" | Med | Chronological timeline of subtask start/end with agent name, duration, truncated output. `TraceTimeline.tsx` already exists in working tree |
-| **Cost/token display per task** | LLM cost awareness is now expected developer hygiene (confirmed by LangSmith + Langfuse both making it prominent). Audit log endpoint already exists | Low | Show total tokens + estimated cost on task detail. Data is already captured in audit log |
+### 1. Agent Tool Use (Function Calling)
 
-**Dependency chain:** Bug-free interaction → one-click startup → README/demo. These three must ship together as a "GitHub readiness" batch before any feature work matters.
+| Feature | Why Expected | Complexity | Dependencies on Existing |
+|---------|--------------|------------|--------------------------|
+| Web search tool (first tool) | Every AI demo in 2026 shows agents retrieving live data. Without it, agents are stale-knowledge chatbots producing generic answers. | Medium | `internal/llm/openai.go` needs tool support; `cmd/openaiagent` needs tool execution loop |
+| Tool call -> result -> continue loop | The standard agentic pattern: LLM calls tool, gets result, reasons about it, optionally calls more tools. Users of CrewAI, LangGraph, AutoGen all expect iterative tool use. | Medium | `internal/llm/openai.go` currently does single-shot `ChatWithHistory` only -- no `tool_calls` handling, no response iteration |
+| Tool execution visibility | Users must see WHAT the agent is doing while it works. "Searching web for: Go error handling best practices..." is 2026 table stakes. Opaque "working..." is unacceptable. | Low | Existing SSE broker + event store can carry new `tool_call` event types. Frontend needs a `ToolCallCard` component. |
+| Strict mode / schema validation | OpenAI best practice: `strict: true` on tool definitions ensures valid JSON args. Prevents hallucinated parameters that break tool execution. | Low | New code in llm client. Pure implementation, no design decisions. |
+| Multiple parallel tool calls | OpenAI models can return multiple tool calls in a single response. Must handle all of them, not just the first. This is documented OpenAI best practice. | Low | Part of the tool loop implementation. Execute in parallel, collect results, send all back. |
+
+**Key technical note:** The current `internal/llm/openai.go` is a 123-line hand-rolled HTTP client that talks to `api.openai.com/v1/chat/completions`. It has no tool support, no streaming, no response iteration. For tool use + streaming, replace it with the official `github.com/openai/openai-go/v3` SDK (v3.30.0, requires Go 1.22+). The SDK provides `responses.FunctionToolParam` for tool definitions, built-in streaming via `client.Responses.NewStreaming()`, and proper tool call loop support.
+
+### 2. Artifact Rendering (Rich Structured Output)
+
+| Feature | Why Expected | Complexity | Dependencies on Existing |
+|---------|--------------|------------|--------------------------|
+| Typed artifact parts in messages | A2A protocol defines artifacts with TextPart, DataPart, FilePart. When agents produce structured data (search results, analysis tables), it must be typed, not a text blob. | Medium | `a2a.Artifact` and `a2a.MessagePart` types exist in `internal/a2a/protocol.go` but only text parts are used. Need artifact model in DB + typed message metadata. |
+| Search results as clickable cards | When web search returns results, render them as source cards with title, URL, snippet -- not raw JSON. Users see the same sources the agent sees. | Medium | New `SearchResultsCard.tsx` component. Tool result events need structured data format. |
+| Table/data artifact as styled card | When an agent produces comparison data or analysis, render it as a formatted table card, not a code block. | Low-Med | Existing `renderMarkdown` handles tables but only from markdown syntax. Need `DataCard.tsx` for structured JSON -> table rendering. |
+| Code block with syntax highlighting | Agents producing code diffs, config snippets, or analysis need proper syntax coloring. Current renderer shows code in plain `<pre>` tags. | Low | Add lightweight syntax highlighter. Shiki (Next.js native) or Prism (smaller). |
+| Copy/download on artifact cards | Users expect to copy code blocks and download generated content with one click. | Low | UI-only addition to artifact card components. |
+
+**Key technical note:** The current `Message` type has `content: string` and `metadata?: Record<string, unknown>`. The approach is additive: add `artifacts` to the Message model (array of typed parts matching A2A Artifact structure) and `artifact_type` to metadata for renderer dispatch. Existing text messages continue rendering via the markdown renderer unchanged.
+
+### 3. Streaming Agent Output
+
+| Feature | Why Expected | Complexity | Dependencies on Existing |
+|---------|--------------|------------|--------------------------|
+| Token-by-token streaming from LLM to frontend | Users expect to see agents "thinking" in real-time. The typing effect is standard UX in 2026. Waiting 10-30s for a full response feels broken. | High | Three-layer change: (1) OpenAI streaming API in Go SDK, (2) A2A `SendStreamingMessage` support in agent binary, (3) SSE relay through broker to frontend. |
+| Streaming during tool use | When agent calls a tool, show "Searching..." status, then stream the reasoning response after tool results return. The two features interleave. | Medium | Depends on both tool use and streaming being implemented. Tool call events show pre-stream; response tokens show post-tool. |
+| Progressive markdown rendering | Markdown arriving mid-stream must render without layout thrashing. Headings, lists, tables need to appear as they form, not flash/reflow. | Medium | Existing custom markdown renderer in `ChatMessage.tsx` is not streaming-aware. Options: (a) buffer + re-render on each chunk, (b) use `react-markdown` with stream adapter, (c) use Streamdown library (streaming-specific). |
+| Per-agent streaming indicator | Show which agent is actively streaming vs. done. Visual distinction between "working" and "streaming response." | Low | `TypingIndicator.tsx` exists. Extend to show streaming state with token count or progress indicator. |
+
+**Key technical note -- the three-layer streaming problem:**
+
+1. **LLM Layer:** OpenAI streaming returns SSE events with delta chunks. The official Go SDK handles this with `stream.Next()` / `stream.Current()`.
+
+2. **A2A Protocol Layer:** The A2A spec defines `SendStreamingMessage` which returns SSE events (`TaskStatusUpdateEvent`, `TaskArtifactUpdateEvent`). The `cmd/openaiagent` binary must serve this. The `CardCapability.Streaming` field is already in the codebase (set to `false`).
+
+3. **Frontend Relay Layer:** The existing SSE broker publishes `models.Event` per task. For streaming token deltas, use a separate non-persisted event channel. The `stream_delta` event type gets relayed to the frontend via SSE but does NOT get stored in the event store (would overwhelm it). Only the final assembled message gets persisted.
+
+### 4. Inbound Webhooks
+
+| Feature | Why Expected | Complexity | Dependencies on Existing |
+|---------|--------------|------------|--------------------------|
+| POST endpoint that creates a task | External systems (GitHub, Slack, CI/CD) send a webhook; TaskHub creates and executes a task from the payload. This is the standard automation pattern (n8n, Zapier, Trigger.dev all do this). | Medium | Outbound webhook infrastructure exists (`internal/webhook/`, `internal/handlers/webhooks.go`, DB table `webhook_configs`). Need new INBOUND handler + API key/HMAC auth. |
+| Webhook secret verification (HMAC) | Security table stakes. GitHub signs payloads with HMAC-SHA256; Slack signs with its own scheme. Must verify before processing. | Low | Existing outbound webhook sender already does HMAC signing (`X-TaskHub-Signature: sha256=...`). Adapt verification logic for inbound. |
+| Source-specific payload parsing | GitHub sends different JSON than Slack sends. Need parsers that extract task title + description from source-specific payloads. At minimum: GitHub (PR/issue events), Slack (slash command), generic JSON. | Medium | New code: template-based mapping from webhook payload fields to task creation params. |
+| Webhook management UI (inbound) | CRUD for inbound webhook endpoints with generated URLs, secret display, and event log. | Low | Outbound webhook settings page exists at `/settings/webhooks`. Extend or add parallel page for inbound. |
+
+**Key technical note:** The pattern is to flip the existing outbound infrastructure. New DB table `inbound_webhook_configs` (id, name, secret, source_type, task_template, created_by, created_at). New endpoint `POST /api/hooks/:id` (public, no session auth -- verified by HMAC). Payload parser maps to task creation, then calls existing `TaskHandler.Create` logic internally.
 
 ---
 
 ## Differentiators
 
-Features that make TaskHub stand apart from the crowded agent framework space. None of these are expected by default — they are the reason a developer stars, forks, or writes about the repo.
+Features that would make TaskHub stand out from other multi-agent platforms. Not expected, but create the "wow moment" that gets GitHub stars.
 
 | Feature | Value Proposition | Complexity | Notes |
 |---------|-------------------|------------|-------|
-| **User-to-sub-agent direct chat during execution** | No existing open-source platform supports real-time user intervention on a running sub-agent. LangGraph, CrewAI, AutoGen all treat sub-agents as black boxes during execution. A2A's message-passing model makes this uniquely natural for TaskHub | High | User sends message to @agent_id in conversation during active task. Handler routes to A2A aggregator mid-execution. Requires conversation → subtask context link and A2A mid-task message injection. This is TaskHub's flagship differentiator |
-| **Multi-task parallel view dashboard** | VS Code's new multi-agent dev view (2026) showed that "see all running agents at once" cuts debugging time 25% in beta. No open-source A2A platform has a unified parallel execution view | Med | Grid/list of active tasks showing: status badge, running subtask count, active agent names, last event. Click-through to full DAG. Driven by existing SSE infrastructure |
-| **Task templates with execution accumulation** | Saving successful orchestration patterns is a gap in all current open-source platforms. Airflow/Prefect have DAG reuse but no LLM-driven pattern learning. TaskHub's template + replan history creates a learning loop no competitor has | Med–High | Two parts: (1) "Save this orchestration as template" button — stores agent assignments + DAG shape. (2) Template auto-match on new tasks — suggest template when title similarity is high. `WorkflowTemplate` model already in DB. Part 1 is Med; part 2 is High |
-| **A2A protocol showcase clarity** | The A2A protocol ecosystem has few real multi-agent reference implementations. Google's own samples demonstrate single-agent interactions. A clear "this is how A2A works end-to-end" narrative in the UI (show agent card, show JSON-RPC wire calls in a dev panel) makes TaskHub the canonical learning resource | Med | Dev panel toggle (hidden by default) showing: agent-card.json, raw A2A JSON-RPC call/response for selected subtask. Requires no new backend — data already in events/audit. Purely a frontend addition |
-| **Adaptive replanning visibility** | TaskHub already does replanning — but it's invisible. Surfacing "Subtask S3 failed, replanned with new approach" in the UI is unique. No public platform shows LLM-driven failure recovery in real-time | Low–Med | Event type `task.replanned` surfaced as a special timeline entry with old vs. new subtask diff. Mostly frontend work on top of existing replan events |
+| Tool call trace in DAG view | Show tool calls as sub-nodes within agent nodes in the React Flow DAG. User sees the full reasoning chain: decompose -> agent starts -> searches web -> reasons -> produces artifact. No open-source platform visualizes the tool-use chain this way. | Medium | Extends existing React Flow DAG. Needs tool-call events persisted as timeline entries. Collapsible sub-nodes within agent nodes. |
+| Live search results preview | When web search tool returns results, show them as clickable source cards in the chat BEFORE the agent reasons about them. User sees the same data the agent is processing. Builds trust and transparency. | Medium | New `SearchResultsCard.tsx` component. Tool result events carry structured search data. |
+| Artifact diff view | When an agent revises a previous artifact (second draft, updated analysis), show a before/after diff. Unique to platforms with artifact versioning. | Medium | Requires artifact_id + version tracking. Uses existing React diff library or simple custom diffing. |
+| Webhook template library | Pre-built configs for GitHub PR review, Slack slash command, Linear issue, Jira ticket. One-click setup with auto-filled payload mappings. | Low | Seed data + template selection UI. Great for demo -- shows breadth without complexity. |
+| Agent tool catalog UI | Page showing which tools each agent has access to, with descriptions and usage stats. Shows the "tool economy" of the platform. | Low | Metadata display only. Agent card already has skills; extend with tool definitions. |
+| Streaming cost ticker | Show estimated token cost accumulating in real-time as the agent streams its response. Makes cost transparency visceral. | Low | Audit logger already tracks tokens. Connect streaming events to a running cost counter in the UI. |
+| Cross-agent artifact passing | Agent A produces a research report; Agent B's prompt includes it as structured context (not just the text blob in the channel). Artifacts flow through the A2A artifact mechanism, not just messages. | High | Changes orchestrator prompt construction and A2A message composition. Requires the artifact model to be solid first. |
 
 ---
 
 ## Anti-Features
 
-Things to explicitly NOT build for this milestone. Each has a clear reason.
+Features to explicitly NOT build. Each adds complexity without advancing the "wow moment."
 
 | Anti-Feature | Why Avoid | What to Do Instead |
 |--------------|-----------|-------------------|
-| **OpenTelemetry / external observability integration** | LangFuse and LangSmith already do this well. Building OTEL export is weeks of work for zero differentiation. TaskHub's audit log is sufficient for a showcase | Keep audit log as-is. Link to LangFuse in README as "production observability" recommendation |
-| **Visual workflow builder (drag-and-drop DAG editor)** | n8n has 150k+ stars on this. Competing with a visual builder is a years-long effort. TaskHub's value is LLM-driven DAG creation, not manual workflow construction | Emphasize that the LLM does the decomposition — that IS the point |
-| **Multi-tenancy / org management** | SaaS-tier feature. Out of scope per PROJECT.md. Adds auth complexity that obscures the A2A showcase | Single-user local mode is the right default. Google OAuth for cloud deployment is sufficient |
-| **Plugin/extension system for custom agent types** | Premature generalization. Extension points before the core is polished lead to abandonment. CrewAI's complexity is cited as a barrier; TaskHub should be the opposite | Use A2A protocol as the extension mechanism — any HTTP agent is a plugin |
-| **Evaluation / LLM-as-judge scoring** | Langfuse has full eval infrastructure. Building evals from scratch is weeks of work with no demo payoff | Display raw task output clearly; let developers judge quality themselves |
-| **Mobile-responsive UI** | Desktop-first developer tool per PROJECT.md. Responsive polish at this stage is wasted effort | Focus desktop layout; don't break mobile but don't optimize for it |
-| **Agent marketplace / registry** | Premature. Community adoption must come first. A2A agent card + discovery endpoint is the right foundation; a marketplace is a product layer that needs an audience | Surface the existing agent-card.json endpoint clearly in the README as the discovery mechanism |
-| **Real-time collaboration (multiple users watching same task)** | Complex WebSocket infrastructure (presence, conflict resolution) for a feature that barely matters in a single-developer showcase tool | SSE per-user is sufficient; don't add multi-cursor complexity |
+| Custom tool builder UI | A visual tool definition editor is a massive scope increase (schema builder, parameter validation UI, test runner). Diminishing returns for a demo platform where developers read code. | Hardcode 2-3 well-chosen tools (web search, code analysis). Let developers add tools by writing Go code. Document the pattern in README. |
+| A2UI protocol integration | A2UI is interesting but nascent (Google-specific, launched mid-2026), adds a rendering dependency layer, and distracts from the A2A protocol focus. | Use simple typed artifact parts (text, table, code, search_results) with custom React renderers. Lighter, faster, and fully controlled. |
+| File upload/storage | A2A's FilePart supports binary artifacts, but hosting files adds infra complexity (S3/MinIO, presigned URLs, size limits, virus scanning). | Support TextPart and DataPart only. File artifacts can reference external URLs without TaskHub hosting them. |
+| Voice/audio streaming | A2A supports non-text modalities but this is entirely out of scope for a developer-focused text-based demo. | Text only. Clearly stated in scope. |
+| Agent-to-agent tool delegation | Agent A asks Agent B to run a tool on its behalf. Adds inter-agent protocol complexity without clear demo value. | Each agent manages its own tools. Cross-agent collaboration happens through channel messages and artifacts, not tool sharing. |
+| Generic MCP server support | MCP (Model Context Protocol) is a different protocol from A2A. Supporting both protocols muddies the "A2A showcase" story and doubles the protocol surface area. | Stay A2A-focused. If agents need external data, wrap it as an OpenAI function tool within the agent binary, not as an MCP server. |
+| Webhook retry queue with dead letter | Enterprise-grade webhook reliability (exponential backoff, DLQ, retry dashboard, delivery guarantees) is overkill for a demo platform. | Simple fire-and-forget for outbound (existing pattern). For inbound, validate and process synchronously. Log failures to audit. |
+| Real-time collaborative document editing | Multiple agents editing the same document simultaneously with OT/CRDT conflict resolution. | Sequential agent turns (existing pattern). Each agent reads latest channel state, produces new output. This is how A2A is designed to work. |
+| Generative UI (agent produces arbitrary React components) | Exciting concept (CopilotKit, Vercel AI SDK do this) but requires a component sandbox, security boundary, and runtime compilation layer. Huge scope. | Pre-built artifact renderers for known types (table, code, search results). Agent output maps to these renderers via type metadata. |
 
 ---
 
 ## Feature Dependencies
 
 ```
-Bug-free interaction
-  → one-click startup (can't demo broken UI)
-    → README/demo GIF (needs working product to record)
-      → GitHub open-source launch
+                    Tool Use (Function Calling)
+                   /            |             \
+                  v             v              v
+          Web Search      Tool Call       Tool Execution
+             Tool         Visibility        Events (SSE)
+                            |                  |
+                            v                  v
+                   Streaming Output     Tool Trace in DAG
+                   /          \          (differentiator)
+                  v            v
+           Token Streaming   Streaming
+           (LLM -> SSE)     Cost Ticker
+                  |          (differentiator)
+                  v
+          Partial Markdown
+            Rendering
 
-Agent status indicators
-  → health-checker SSE bridge (backend)
-    → status dot component (frontend)
+          Artifact Rendering
+           /        |         \
+          v         v          v
+     Artifact    Artifact    Artifact
+      Model     Card UI     Copy/Download
+    (DB + API)     |
+          \        v
+           \  Search Results Card
+            \  (differentiator)
+             \
+              v
+         Artifact Diff View
+          (differentiator)
 
-User-to-sub-agent direct chat
-  → conversation-to-subtask context link
-    → A2A mid-task message injection (backend)
-      → chat UI routing to @agent mentions during active task
-
-Task templates
-  → "save as template" (part 1)
-    → template auto-match on new task (part 2, optional v1)
-
-Multi-task parallel view
-  → no new backend dependencies
-  → requires stable SSE (fixed in bug-free interaction pass)
-
-A2A showcase dev panel
-  → no new backend
-  → requires existing event/audit data to be well-structured
+          Inbound Webhooks  (independent track)
+           /           \
+          v             v
+     Webhook       Payload
+     Endpoint      Parsers
+     + Auth           |
+          \          v
+       Webhook Template Library
+          (differentiator)
 ```
+
+### Critical Path
+
+**Tool Use must come first.** It is the foundation for both streaming (streaming a tool-using agent is the compelling demo) and artifacts (tools produce the structured data worth rendering as cards). Without tool use, streaming is just "watch text appear faster" and artifacts have nothing structured to render.
+
+**Inbound webhooks are independent** and can be built in parallel with the tool use + streaming track.
+
+### Dependency Matrix
+
+| Feature A | Requires Feature B | Reason |
+|-----------|-------------------|--------|
+| Streaming agent output | Tool use (function calling) | Streaming a simple chat response is unimpressive. The demo value is streaming a tool-using agent: search -> reason -> produce artifact. |
+| Artifact card rendering | Tool use (function calling) | Without tools, agents produce only text. With tools (web search results, computed data), agents produce structured data worth rendering. |
+| Tool trace in DAG | Tool execution events (SSE) | Cannot visualize what isn't tracked. |
+| Streaming cost ticker | Streaming + audit logger | Needs real-time token events to display running cost. |
+| Artifact diff view | Artifact model (DB + API) | Needs versioned artifact storage before diffs make sense. |
+| Webhook template library | Inbound webhook endpoint | Templates configure the endpoint, not vice versa. |
+| Live search results preview | Web search tool + tool visibility events | Search results must flow as structured tool-result events. |
+| Cross-agent artifact passing | Artifact model (DB + API) | Must store and reference artifacts before passing them between agents. |
 
 ---
 
 ## MVP Recommendation
 
-For the active milestone (github open-source readiness + featured additions), prioritize in this order:
+### Must Build (Core "Wow Moment") -- ordered by dependency
 
-**Must ship (table stakes):**
-1. Frontend bug fixes — unblocks everything
-2. One-click Docker startup + seeded demo agents
-3. Agent status indicators (visible proof the system is live)
-4. README with hero demo GIF + quickstart instructions
-5. Task trace/timeline view (developers will look for this immediately)
-6. Cost/token display (existing data, minimal work)
+1. **Upgrade LLM client to official OpenAI Go SDK** -- Foundation for everything. Replace `internal/llm/openai.go` with `github.com/openai/openai-go/v3`. Enables tool definitions, tool call loop, and streaming in one library.
 
-**High-value differentiators (ship if time allows):**
-7. Multi-task parallel view dashboard — medium complexity, high visual impact for demos
-8. Adaptive replanning visibility — mostly frontend, unique to TaskHub
-9. A2A dev panel (show JSON-RPC wire calls) — makes TaskHub the canonical A2A learning resource
-10. User-to-sub-agent direct chat — highest complexity, flagship differentiator; target for follow-on milestone if scope is tight
+2. **Web search tool for agents** -- THE feature that transforms the demo. Use Tavily API (free tier: 1000 searches/month, agent-optimized responses, ~1s latency). Define as an OpenAI function tool with `strict: true`. The engineering agent searches for code patterns, the marketing agent searches for market data, etc.
 
-**Defer:**
-- Task templates (part 2: auto-match) — defer until templates are being used
-- Task filtering/search — can ship alongside parallel view as simple filter buttons
+3. **Tool execution visibility via SSE** -- Show tool calls in real-time in the chat feed: "Searching: best practices for Go error handling..." appears while the agent works. Publish `tool_call_started` and `tool_call_completed` events through the existing SSE broker. New `ToolCallCard.tsx` component in frontend. Low complexity, high perceived value.
+
+4. **Streaming agent output** -- Token-by-token streaming from LLM through A2A to frontend. Three-layer implementation: SDK streaming -> agent binary SSE -> platform SSE relay -> React progressive rendering. Use non-persisted `stream_delta` events to avoid overwhelming event store.
+
+5. **Basic artifact cards** -- When agents produce structured data (search results, tables, code), render as styled cards. Start with 3 artifact types: `search_results`, `code`, `table`. Does not require full artifact DB storage initially -- use typed message metadata. Upgrade to full artifact model in a follow-up phase.
+
+6. **Inbound webhook endpoint** -- `POST /api/hooks/:id` with HMAC verification. GitHub PR and Slack slash command templates for the demo. Flips existing outbound webhook pattern.
+
+### Defer to Later Phases
+
+| Feature | Why Defer | When |
+|---------|-----------|------|
+| Artifact diff view | Requires versioned artifact storage that doesn't exist yet | After artifact model is solid (Phase 2+) |
+| Cross-agent artifact passing | High complexity, changes orchestrator prompt construction | Future milestone |
+| Streaming cost ticker | Nice polish but not core demo value | Phase 3+ |
+| Tool trace in DAG view | Requires significant React Flow sub-node work | Phase 2+ |
+| Agent tool catalog UI | Metadata page; build after tools are working and stable | Phase 3+ |
+| Webhook template library beyond 2 | Start with GitHub + Slack only; add more based on user demand | Phase 2+ |
+
+---
+
+## Existing Code Touchpoints
+
+| New Feature | Files to Modify | Files to Create |
+|-------------|----------------|-----------------|
+| LLM SDK upgrade | `internal/llm/openai.go` (rewrite), `cmd/openaiagent/openai.go` (rewrite), `go.mod` (add openai-go/v3) | -- |
+| Tool use | `cmd/openaiagent/main.go` (add tool loop + tool execution), `cmd/openaiagent/roles.go` (add tool definitions per role) | `internal/tools/websearch.go` (Tavily client), `internal/tools/tools.go` (tool registry interface) |
+| Tool visibility | `internal/events/broker.go` (new event types), `web/lib/types.ts` (new SSE event types), `web/lib/store.ts` (handle tool events) | `web/components/chat/ToolCallCard.tsx` |
+| Streaming (backend) | `internal/a2a/client.go` (add SendStreamingMessage), `internal/a2a/protocol.go` (streaming types), `internal/executor/executor.go` (streaming execution path), `cmd/openaiagent/main.go` (serve streaming endpoint) | `internal/a2a/streaming.go` (SSE parse/relay helpers) |
+| Streaming (frontend) | `web/components/chat/GroupChat.tsx` (streaming state), `web/lib/sse.ts` (delta handling), `web/lib/store.ts` (streaming message state) | `web/components/chat/StreamingMessage.tsx` (progressive render) |
+| Streaming relay | `internal/handlers/stream.go` (relay stream deltas without persisting) | -- |
+| Artifact rendering | `web/components/chat/ChatMessage.tsx` (dispatch to renderers), `web/lib/types.ts` (artifact types), `internal/models/models.go` (artifact fields on Message) | `web/components/artifacts/SearchResultsCard.tsx`, `web/components/artifacts/CodeBlock.tsx`, `web/components/artifacts/DataCard.tsx` |
+| Artifact storage | `internal/models/models.go` (Artifact struct) | `internal/db/migrations/NNN_artifacts.sql` |
+| Inbound webhooks | `cmd/server/main.go` (register route) | `internal/handlers/inbound_hooks.go`, `internal/db/migrations/NNN_inbound_webhooks.sql`, `web/app/settings/inbound-webhooks/page.tsx` |
+
+---
+
+## Technical Decision Points
+
+### Web Search API: Tavily vs Brave Search
+
+| Criterion | Tavily | Brave Search |
+|-----------|--------|-------------|
+| Agent Score (2026 benchmark) | 13.67 | 14.89 (highest) |
+| Latency | ~998ms | ~669ms (fastest) |
+| Free tier | 1000 searches/month | 2000 searches/month |
+| Response format | Pre-summarized for LLMs (ideal for function calling) | Raw search results (need extraction) |
+| SDK availability | npm + Python (no official Go SDK) | REST API (no SDK needed) |
+| Setup complexity | API key + POST request | API key + POST request |
+
+**Recommendation: Tavily for v2.0.** Despite Brave's better benchmark scores, Tavily returns pre-formatted summaries optimized for LLM consumption. This means the search tool produces immediately useful context without a summarization step. The free tier is sufficient for demo usage. If scale demands it, migrate to Brave later -- the tool interface abstracts the provider.
+
+### OpenAI API: Chat Completions vs Responses API
+
+| Criterion | Chat Completions | Responses API |
+|-----------|-----------------|---------------|
+| Status | Maintained "indefinitely" | Primary recommended API |
+| Tool support | `tools` + `tool_calls` in response | `ToolUnionParam` with function tools |
+| Streaming | `stream: true` with SSE chunks | `NewStreaming()` with typed events |
+| Go SDK support | Full | Full (v3.30.0) |
+| Migration effort | Low (current code is Chat Completions) | Medium (different request/response types) |
+
+**Recommendation: Responses API.** OpenAI recommends it for new integrations. Since we are rewriting the LLM client anyway (hand-rolled HTTP -> SDK), there is no incremental cost to targeting the Responses API. The Chat Completions API will be maintained but the Responses API gets all new features first.
+
+### Streaming Architecture: Persist Everything vs Delta Relay
+
+| Approach | Pros | Cons |
+|----------|------|------|
+| Persist every token delta | Full replay from DB; crash recovery | Thousands of rows per response; DB thrash; event store overwhelmed |
+| Non-persisted delta relay | Fast; no DB load; clean event store | No replay of partial responses; need final-message persistence |
+| Hybrid: relay deltas, persist milestones | Balance of replay and performance | Slightly more complex; define what a "milestone" is |
+
+**Recommendation: Non-persisted delta relay.** Publish `stream_delta` events through the SSE broker but do NOT store them in the events table. When streaming completes, persist the final assembled message as a normal `message` event. This keeps the event store clean and performant. If crash recovery mid-stream is needed later, add checkpoint persistence (hybrid approach) -- but for v2.0, clean restart is acceptable.
 
 ---
 
 ## Sources
 
-- [A2A Protocol specification](https://a2a-protocol.org/latest/)
-- [A2A Protocol GitHub samples](https://github.com/a2aproject/a2a-samples)
-- [Google A2A Announcement](https://developers.googleblog.com/en/a2a-a-new-era-of-agent-interoperability/)
-- [LangGraph vs CrewAI vs AutoGen comparison 2026](https://o-mega.ai/articles/langgraph-vs-crewai-vs-autogen-top-10-agent-frameworks-2026)
-- [Langfuse open source observability](https://langfuse.com/docs/observability/overview)
-- [AgentOps agent observability features](https://aiagentslist.com/agents/agentops)
-- [Agentic UX patterns — Smashing Magazine](https://www.smashingmagazine.com/2026/02/designing-agentic-ai-practical-ux-patterns/)
-- [VS Code multi-agent development (2026)](https://code.visualstudio.com/blogs/2026/02/05/multi-agent-development)
-- [Building effective AI agents — Anthropic](https://www.anthropic.com/research/building-effective-agents)
-- [Simon Willison agentic anti-patterns](https://simonwillison.net/guides/agentic-engineering-patterns/anti-patterns/)
-- [Top open-source agentic AI repos 2025](https://opendatascience.com/the-top-ten-github-agentic-ai-repositories-in-2025/)
-- [n8n AI agent orchestration frameworks comparison](https://blog.n8n.io/ai-agent-orchestration-frameworks/)
+### Agent Tool Use / Function Calling
+- [OpenAI Function Calling Guide](https://platform.openai.com/docs/guides/function-calling) -- MEDIUM confidence (403 on deep fetch; details from search summaries and SDK examination)
+- [OpenAI Go SDK (openai-go v3.30.0)](https://github.com/openai/openai-go) -- HIGH confidence (official repository, version verified)
+- [OpenAI Responses API Migration Guide](https://developers.openai.com/api/docs/guides/migrate-to-responses) -- MEDIUM confidence (search summary)
+- [Tool Calling Explained: 2026 Guide (Composio)](https://composio.dev/content/ai-agent-tool-calling-guide) -- LOW confidence (third party)
+- [OpenAI Practical Guide to Building Agents](https://openai.com/business/guides-and-resources/a-practical-guide-to-building-ai-agents/) -- MEDIUM confidence (official but marketing-adjacent)
+
+### Web Search APIs for Agents
+- [Agentic Search Benchmark 2026](https://aimultiple.com/agentic-search) -- MEDIUM confidence (independent benchmark with methodology)
+- [Beyond Tavily: AI Search APIs in 2026](https://websearchapi.ai/blog/tavily-alternatives) -- MEDIUM confidence (comparison article)
+- [Best Web Search APIs for AI 2026 (Firecrawl)](https://www.firecrawl.dev/blog/best-web-search-apis) -- MEDIUM confidence (vendor article)
+- [Exa vs Tavily vs Serper vs Brave Comparison](https://dev.to/supertrained/exa-vs-tavily-vs-serper-vs-brave-search-for-ai-agents-an-score-comparison-2l1g) -- MEDIUM confidence (community benchmark)
+
+### A2A Protocol
+- [A2A Protocol Specification](https://a2a-protocol.org/latest/specification/) -- HIGH confidence (official spec, fetched and verified)
+- [Project A2A deep dive doc](docs/superpowers/a2a-protocol-deep-dive.md) -- HIGH confidence (project documentation verified against spec)
+- [A2A GitHub Repository](https://github.com/a2aproject/A2A) -- HIGH confidence (official)
+
+### Artifact Rendering / UI
+- [A2UI Protocol Guide (Google)](https://developers.googleblog.com/introducing-a2ui-an-open-project-for-agent-driven-interfaces/) -- MEDIUM confidence (nascent but authoritative source)
+- [Streamdown (streaming markdown)](https://streamdown.ai/) -- MEDIUM confidence (specialized library for streaming markdown)
+- [shadcn/ui AI Components](https://www.shadcn.io/ai) -- MEDIUM confidence (compatible with existing stack)
+- [Vercel AI SDK Markdown Rendering](https://ai-sdk.dev/cookbook/next/markdown-chatbot-with-memoization) -- MEDIUM confidence (official Vercel docs)
+
+### Streaming
+- [OpenAI Streaming Chat Completions Events](https://developers.openai.com/api/reference/resources/chat/subresources/completions/streaming-events) -- HIGH confidence (official API reference)
+- [OpenAI Streaming Responses Guide](https://developers.openai.com/api/docs/guides/streaming-responses) -- HIGH confidence (official docs)
+
+### Inbound Webhooks
+- [GitHub Webhooks Guide](https://www.magicbell.com/blog/github-webhooks-guide) -- MEDIUM confidence (well-documented standard pattern)
+- [Slack Webhook Triggers](https://api.slack.com/automation/triggers/webhook) -- HIGH confidence (official Slack docs)
+- [Hookdeck GitHub Agent Automation](https://hookdeck.com/webhooks/platforms/github-trigger-dev-claude-automation) -- MEDIUM confidence (practical implementation reference)
+
+### Multi-Agent Framework Patterns
+- [Multi-Agent Framework Comparison 2026](https://gurusup.com/blog/best-multi-agent-frameworks-2026) -- LOW confidence (overview article)
+- [AI Agent Frameworks: CrewAI vs AutoGen vs LangGraph](https://designrevision.com/blog/ai-agent-frameworks) -- LOW confidence (comparison article)
