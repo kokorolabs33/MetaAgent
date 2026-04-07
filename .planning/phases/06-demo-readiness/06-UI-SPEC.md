@@ -5,6 +5,7 @@ status: draft
 shadcn_initialized: true
 preset: base-nova
 created: 2026-04-06
+revised: 2026-04-06
 ---
 
 # Phase 6 -- UI Design Contract
@@ -34,7 +35,7 @@ Declared values (multiples of 4):
 | Token | Value | Usage |
 |-------|-------|-------|
 | xs | 4px | Icon gaps, badge padding-y, inline spacing |
-| sm | 8px | Compact element spacing, button gaps, filter field gaps |
+| sm | 8px | Compact element spacing, button gaps, filter field gaps, button padding-y |
 | md | 16px | Default element spacing, card padding, section padding |
 | lg | 24px | Section padding, page content padding (p-6) |
 | xl | 32px | Layout gaps between major sections |
@@ -51,15 +52,18 @@ Source: Established patterns in `web/app/analytics/page.tsx` (p-6, gap-4, gap-6,
 
 | Role | Size | Weight | Line Height | Tailwind Class |
 |------|------|--------|-------------|----------------|
+| Label | 12px | 400 (regular) | 1.33 | text-xs |
 | Body | 14px | 400 (regular) | 1.5 | text-sm |
-| Label | 12px | 500 (medium) | 1.33 | text-xs font-medium |
-| Heading | 18px | 600 (semibold) | 1.3 | text-lg font-semibold |
-| Page Title | 24px | 700 (bold) | 1.2 | text-2xl font-bold |
-| Stat Value | 30px | 700 (bold) | 1.2 | text-3xl font-bold |
+| Heading | 20px | 600 (semibold) | 1.2 | text-xl font-semibold |
+| Stat Value | 30px | 600 (semibold) | 1.2 | text-3xl font-semibold |
 
-Note: Phase 6 uses 4 roles (Body, Label, Heading, Stat Value) consistently across all manage pages. The Stat Value role is specific to analytics stat cards. Page Title appears at the top of each page.
+2 weights only: 400 (regular) for Body and Label, 600 (semibold) for Heading and Stat Value.
 
-Source: Existing analytics page (text-3xl font-bold for stat values, text-2xl font-bold for page title, text-sm for body, text-xs font-medium for labels).
+4 sizes only: 12px, 14px, 20px, 30px. Page titles use the Heading role (20px semibold). Stat Value is reserved for analytics stat cards only.
+
+Note: Where existing pages use `text-2xl font-bold` for page titles or `font-medium` for labels, new Phase 6 code normalizes to the 2-weight system above. Existing code outside Phase 6 scope is not modified.
+
+Source: Existing analytics page patterns, consolidated to meet 4-size / 2-weight constraint.
 
 ---
 
@@ -68,11 +72,13 @@ Source: Existing analytics page (text-3xl font-bold for stat values, text-2xl fo
 | Role | Value | Usage |
 |------|-------|-------|
 | Dominant (60%) | `bg-gray-950` / oklch(0.145 0 0) | Page background, main content area |
-| Secondary (30%) | `bg-gray-900/50` / `bg-card` | Cards, table containers, stat cards, filter bar |
-| Accent (10%) | `bg-blue-400` / `bg-blue-500` | Page title icons, chart bars, active filter indicator, task ID links |
+| Secondary (30%) | `bg-gray-900/50` / `bg-card` | Cards, table containers, stat cards, filter bar, active filter button background |
+| Accent (10%) | `bg-blue-400` / `bg-blue-500` | Page title icons, chart bars, clickable task ID links, agent drill-down expand chevron on hover |
 | Destructive | oklch(0.704 0.191 22.216) | Delete policy button, failed status indicators |
 
-Accent reserved for: page header icons (BarChart3, ScrollText), daily task chart bars, active time range filter button background, clickable task ID links in audit log, agent drill-down expand chevron on hover.
+Accent reserved for: page header icons (BarChart3, ScrollText), daily task chart bars, clickable task ID links in audit log, agent drill-down expand chevron on hover.
+
+Note: Active time range filter buttons use `bg-secondary text-white` (secondary surface, not accent). This keeps accent reserved for interactive discovery cues (links, icons) rather than selection state.
 
 ### Status Colors (established, do not change)
 
@@ -122,20 +128,22 @@ Source: Existing patterns in analytics, audit, templates, and policies pages.
 - **Location:** Inline within audit page filter bar, above the existing filters
 - **Pattern:** Row of preset buttons, mutually exclusive selection
 - **Buttons:** "Last hour" | "Today" | "7 days" | "30 days" | "All"
-- **Active state:** `bg-secondary text-white` (same as nav active state)
+- **Active state:** `bg-secondary text-white` (same as nav active state -- secondary surface, not accent)
 - **Inactive state:** `text-gray-400 hover:bg-secondary/50 hover:text-gray-200`
-- **Sizing:** `px-3 py-1.5 text-xs font-medium rounded-lg`
+- **Sizing:** `px-3 py-2 text-xs rounded-lg`
 - **Layout:** `flex items-center gap-2` row, positioned left-aligned above existing filter inputs
-- **Label:** `text-xs font-medium text-muted-foreground` reading "Time Range" above the button row
+- **Label:** `text-xs text-muted-foreground` reading "Time Range" above the button row
 
 Source: Decision D-14, D-15. Styling matches existing nav button pattern from `web/app/manage/layout.tsx`.
 
 #### 2. AnalyticsFilterBar (analytics dashboard)
 
 - **Location:** Between page title and stat cards
+- **Focal point:** Stat cards row (first data the user sees after the filter bar)
 - **Pattern:** Horizontal bar with time range selector + status dropdown
 - **Time range:** Button group identical to TimeRangeFilter: "7 days" | "30 days" | "All"
-- **Status filter:** `<select>` styled as `rounded-lg border border-input bg-transparent px-3 py-1.5 text-sm` with options: "All statuses" | "Completed" | "Failed"
+- **Time range button sizing:** `px-3 py-2 text-xs rounded-lg` (matches TimeRangeFilter)
+- **Status filter:** `<select>` styled as `rounded-lg border border-input bg-transparent px-3 py-2 text-sm` with options: "All statuses" | "Completed" | "Failed"
 - **Layout:** `flex items-center justify-between` -- time range left, status dropdown right
 - **Spacing:** `mb-6` below title, `space-y-6` maintained above stat cards
 
@@ -146,12 +154,12 @@ Source: Decision D-12, D-13.
 - **Location:** Expands below clicked agent row in the Agent Performance table
 - **Trigger:** Click anywhere on agent row; cursor `cursor-pointer`
 - **Row hover:** `hover:bg-gray-800/30` (matches audit row hover)
-- **Expand indicator:** ChevronDown/ChevronUp icon in leftmost column (16px, `text-muted-foreground`)
+- **Expand indicator:** ChevronDown/ChevronUp icon in leftmost column (16px, `text-muted-foreground`), `aria-label="Expand agent details"` / `aria-label="Collapse agent details"`
 - **Expanded panel styling:** `bg-gray-800/20` with `px-8 py-4` padding, full-width colspan
 - **Panel contents:**
   - **Task list:** Compact table with columns: Task Title (truncated 40ch), Status (badge), Duration, Date
   - **Summary row above table:** 3 inline stats: "X completed" (green-400) | "Y failed" (red-400) | "Avg Zm Ns" (foreground)
-  - **Summary stats:** `text-xs font-medium` with colored dot prefixes
+  - **Summary stats:** `text-xs` with colored dot prefixes
   - **Task table:** `text-xs`, same styling as parent table headers
   - **Max height:** `max-h-64 overflow-auto` for the task list scroll area
   - **Empty state:** "No tasks assigned to this agent in the selected range" in `text-xs text-muted-foreground`
@@ -172,6 +180,42 @@ Source: Decision D-04, D-05. Matches existing stat formatting in `web/app/manage
 
 ## Page Contracts
 
+### /manage/analytics (enhanced)
+
+**Focal point:** Stat cards row -- the 4 summary numbers are the first thing the user's eye should land on after the filter bar.
+
+**Current state:** Stat cards + status distribution + daily tasks chart + agent performance table.
+
+**Additions for Phase 6:**
+1. **FilterBar** between title and stat cards: time range buttons (7d/30d/all) + status dropdown
+2. **Agent row click** expands inline drill-down panel
+3. Filters affect stat cards, charts, and agent table simultaneously
+4. Agent rows get cursor-pointer and chevron indicator with `aria-label`
+
+**Empty state (already exists per section):**
+- Status distribution: "No tasks yet"
+- Daily tasks: "No tasks in the last 7 days"
+- Agent performance: "No agent activity recorded"
+
+**New empty state for drill-down:** "No tasks assigned to this agent in the selected range"
+
+**Loading state (already exists):** Centered `Loader2` spinner
+
+### /manage/audit (enhanced)
+
+**Focal point:** The event table -- the filterable audit log is the primary content.
+
+**Current state:** Filter form (event type, task ID, agent/actor ID) + paginated table with expandable rows.
+
+**Additions for Phase 6:**
+1. **TimeRangeFilter** preset buttons added above existing filter inputs
+2. Time range works alongside existing type/task/agent filters
+3. Selected time range is sent as query parameter to backend
+
+**Empty state (already exists):** "No events match the current filters"
+
+**Loading state (already exists):** Centered `Loader2` spinner
+
 ### /manage/templates (enhanced)
 
 **Current state:** List of template cards with name, description, version, active/inactive badge.
@@ -188,38 +232,6 @@ Source: Decision D-04, D-05. Matches existing stat formatting in `web/app/manage
 ### /manage/templates/[id] (no changes)
 
 No UI changes. Seed data populates existing template detail layout with steps, variables, and analysis data.
-
-### /manage/analytics (enhanced)
-
-**Current state:** Stat cards + status distribution + daily tasks chart + agent performance table.
-
-**Additions for Phase 6:**
-1. **FilterBar** between title and stat cards: time range buttons (7d/30d/all) + status dropdown
-2. **Agent row click** expands inline drill-down panel
-3. Filters affect stat cards, charts, and agent table simultaneously
-4. Agent rows get cursor-pointer and chevron indicator
-
-**Empty state (already exists per section):**
-- Status distribution: "No tasks yet"
-- Daily tasks: "No tasks in the last 7 days"
-- Agent performance: "No agent activity recorded"
-
-**New empty state for drill-down:** "No tasks assigned to this agent in the selected range"
-
-**Loading state (already exists):** Centered `Loader2` spinner
-
-### /manage/audit (enhanced)
-
-**Current state:** Filter form (event type, task ID, agent/actor ID) + paginated table with expandable rows.
-
-**Additions for Phase 6:**
-1. **TimeRangeFilter** preset buttons added above existing filter inputs
-2. Time range works alongside existing type/task/agent filters
-3. Selected time range is sent as query parameter to backend
-
-**Empty state (already exists):** "No events match the current filters"
-
-**Loading state (already exists):** Centered `Loader2` spinner
 
 ### /manage/settings/policies (no UI changes)
 
@@ -243,11 +255,11 @@ No UI changes. Seed data populates the existing CRUD page with 4-5 policies. The
 | Templates: empty state | "No templates yet. Create one from a completed task or manually." (existing) |
 | Policies: empty state | "No policies configured." (existing) |
 | Policies: delete confirmation | No confirmation dialog (existing behavior -- immediate delete). Phase 6 preserves this for demo simplicity. |
-| Error: analytics load fail | "Failed to load analytics" (existing) |
-| Error: audit load fail | "Failed to load audit logs" (existing) |
-| Error: templates load fail | Standard fetch error message from api.ts |
+| Error: analytics load fail | "Failed to load analytics -- refresh to try again" |
+| Error: audit load fail | "Failed to load audit logs -- refresh to try again" |
+| Error: templates load fail | "Failed to load templates -- refresh to try again" |
 
-Source: Existing copy from `web/app/analytics/page.tsx`, `web/app/audit/page.tsx`, `web/app/manage/templates/page.tsx`. New copy follows the same terse, developer-tool style.
+Source: Existing copy from `web/app/analytics/page.tsx`, `web/app/audit/page.tsx`, `web/app/manage/templates/page.tsx`. New copy follows the same terse, developer-tool style. Error copy standardized with actionable guidance.
 
 ---
 
@@ -266,7 +278,7 @@ Source: Existing copy from `web/app/analytics/page.tsx`, `web/app/audit/page.tsx
 ### Time Range Filters (audit + analytics)
 
 1. Clicking a preset button immediately applies the filter (no submit button needed)
-2. Active button gets `bg-secondary text-white` styling
+2. Active button gets `bg-secondary text-white` styling (secondary surface, not accent)
 3. Existing filters remain applied -- time range is additive
 4. On page load, default selection is "All" (no time restriction)
 5. Switching time range resets pagination to page 1 (audit only)
