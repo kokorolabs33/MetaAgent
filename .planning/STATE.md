@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Phase 5 context gathered
-last_updated: "2026-04-06T02:16:26.552Z"
-last_activity: 2026-04-05
+stopped_at: Phase 5 execution complete
+last_updated: "2026-04-07T01:40:43.660Z"
+last_activity: 2026-04-06 -- Phase 05 planning complete
 progress:
   total_phases: 5
-  completed_phases: 3
-  total_plans: 9
-  completed_plans: 9
+  completed_phases: 4
+  total_plans: 11
+  completed_plans: 11
   percent: 100
 ---
 
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-04-04)
 Phase: 3
 Plan: Not started
 Status: Ready to execute
-Last activity: 2026-04-05
+Last activity: 2026-04-06 -- Phase 05 planning complete
 
 Progress: [░░░░░░░░░░] 0%
 
@@ -70,13 +70,17 @@ Recent decisions affecting current work:
 
 None yet.
 
+### Roadmap Evolution
+
+- Phase 6 added: Demo Readiness — make all manage pages functional for demo
+
 ### Blockers/Concerns
 
-- Phase 4 kickoff: HTTP/2 TLS vs. multiplexed `/api/events/stream?tasks=...` endpoint — must decide before Phase 4 begins; plain HTTP Docker Compose deployment cannot use HTTP/2
-- Phase 5 kickoff: A2A `input_required` state mechanics and contextId threading — needs spec review and design doc before writing InterventionRouter
+- Phase 4 kickoff: HTTP/2 TLS vs. multiplexed `/api/events/stream?tasks=...` endpoint — must decide before Phase 4 begins; plain HTTP Docker Compose deployment cannot use HTTP/2 (RESOLVED — chose multiplexed SSE)
+- Phase 5 kickoff: A2A `input_required` state mechanics and contextId threading — needs spec review and design doc before writing InterventionRouter (RESOLVED — implemented SendAdvisory with isolated contextID)
 
 ## Session Continuity
 
-Last session: 2026-04-06T02:16:26.550Z
-Stopped at: Phase 5 context gathered
-Resume file: .planning/phases/05-chat-intervention/05-CONTEXT.md
+Last session: 2026-04-07T01:40:43.657Z
+Stopped at: Phase 5 execution complete
+Resume file: .planning/phases/05-chat-intervention/05-02-SUMMARY.md

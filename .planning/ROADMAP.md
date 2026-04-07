@@ -97,8 +97,8 @@ Plans:
 **Plans:** 2 plans
 
 Plans:
-- [ ] 05-01-PLAN.md — Backend: SendAdvisory method + routeAdvisory validation + typing indicator SSE events
-- [ ] 05-02-PLAN.md — Frontend: advisory reply label + TypingIndicator + status-enriched autocomplete + human verification
+- [x] 05-01-PLAN.md — Backend: SendAdvisory method + routeAdvisory validation + typing indicator SSE events
+- [x] 05-02-PLAN.md — Frontend: advisory reply label + TypingIndicator + status-enriched autocomplete + human verification
 
 **UI hint**: yes
 
@@ -114,3 +114,16 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5
 | 3. Templates | 0/TBD | Not started | - |
 | 4. Parallel Dashboard | 0/TBD | Not started | - |
 | 5. Chat Intervention | 0/2 | Planning complete | - |
+
+### Phase 6: Demo Readiness
+
+**Goal**: All manage pages are functional with real or seeded data, the platform can run with OpenAI key for task decomposition, and every page is demo-worthy
+**Depends on**: Phase 4, Phase 5
+**Requirements**: TBD
+**Success Criteria** (what must be TRUE):
+  1. Task decomposition works with OpenAI API key (not just Anthropic)
+  2. /manage/templates shows seeded template data with usage stats
+  3. /manage/analytics has per-agent drill-down with task assignments and time/status filters
+  4. /manage/audit shows audit logs with filtering by time, agent, and event type
+  5. /manage/settings/policies shows seeded policy data
+**Plans**: TBD
