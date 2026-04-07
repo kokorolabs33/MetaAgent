@@ -123,6 +123,9 @@ func main() {
 	}
 	go healthChecker.Start(ctx)
 
+	inboundWebhookH := &handlers.InboundWebhookHandler{DB: pool, Executor: exec}
+	go inboundWebhookH.StartCleanupLoop(ctx)
+
 	webhookH := &handlers.WebhookHandler{DB: pool, Sender: webhookSender}
 	policyH := &handlers.PolicyHandler{DB: pool}
 	templateH := &handlers.TemplateHandler{DB: pool}
@@ -163,6 +166,9 @@ func main() {
 	// Internal agent-to-platform callback (no auth -- agents on same host)
 	streamingDeltaH := &handlers.StreamingDeltaHandler{DB: pool, Broker: broker}
 	r.Post("/api/internal/streaming-delta", streamingDeltaH.HandleDelta)
+
+	// Inbound webhook ingestion (no auth -- external systems authenticate via HMAC)
+	r.Post("/api/webhooks/inbound/{id}", inboundWebhookH.Ingest)
 
 	// Auth routes (public — no auth middleware)
 	r.Post("/api/auth/login", authH.SimpleLogin)
@@ -228,7 +234,14 @@ func main() {
 		// Audit logs
 		r.Get("/api/audit-logs", auditLogH.List)
 
-		// Webhooks
+		// Inbound Webhooks (management)
+		r.Get("/api/inbound-webhooks", inboundWebhookH.List)
+		r.Post("/api/inbound-webhooks", inboundWebhookH.Create)
+		r.Get("/api/inbound-webhooks/{id}", inboundWebhookH.Get)
+		r.Put("/api/inbound-webhooks/{id}", inboundWebhookH.Update)
+		r.Delete("/api/inbound-webhooks/{id}", inboundWebhookH.Delete)
+
+		// Outbound Webhooks
 		r.Get("/api/webhooks", webhookH.List)
 		r.Post("/api/webhooks", webhookH.Create)
 		r.Put("/api/webhooks/{id}", webhookH.Update)
