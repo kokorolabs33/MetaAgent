@@ -5,7 +5,8 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
 import { cn } from "@/lib/utils";
-import type { Message } from "@/lib/types";
+import type { Message, Artifact } from "@/lib/types";
+import { ArtifactRenderer } from "@/components/artifacts/ArtifactRenderer";
 
 interface ChatMessageProps {
   message: Message;
@@ -255,6 +256,11 @@ export function ChatMessage({ message }: ChatMessageProps) {
           <div className="mt-0.5 text-xs italic text-gray-500">
             {renderContent(message.content)}
           </div>
+          {Array.isArray(message.metadata?.artifacts) && (
+            <ArtifactRenderer
+              artifacts={message.metadata.artifacts as Artifact[]}
+            />
+          )}
         </div>
       </div>
     );
@@ -287,6 +293,11 @@ export function ChatMessage({ message }: ChatMessageProps) {
         <div className="mt-0.5 max-w-full overflow-hidden text-sm leading-relaxed text-gray-300">
           {renderContent(message.content)}
         </div>
+        {Array.isArray(message.metadata?.artifacts) && (
+          <ArtifactRenderer
+            artifacts={message.metadata.artifacts as Artifact[]}
+          />
+        )}
       </div>
     </div>
   );
