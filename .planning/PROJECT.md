@@ -23,15 +23,20 @@ Developers can experience a complete A2A multi-agent collaboration flow — from
 - ✓ Adaptive replanning on subtask failure — existing
 - ✓ Conversation memory per contextId for multi-turn interactions — existing
 - ✓ Chat interface with Master Agent — existing
+- ✓ Agent status visualization (online/working/idle/offline) — Validated in Phase 2
+- ✓ Enhanced chat intervention (advisory @mention to sub-agents) — Validated in Phase 5
+- ✓ Multi-task parallel dashboard with live status — Validated in Phase 4
+- ✓ OpenAI LLM support (gpt-4o-mini) — Validated in Phase 6
+- ✓ Seeded demo data (templates, policies, demo tasks) — Validated in Phase 6
+- ✓ Analytics per-agent drill-down with time/status filters — Validated in Phase 6
+- ✓ Audit log time range filtering — Validated in Phase 6
 
 ### Active
 
-- [ ] Fix frontend-backend interaction bugs and improve interaction smoothness
-- ✓ Agent status visualization (online/working/idle/offline indicators with real-time activity feedback) — Validated in Phase 2: agent-status
-- [ ] Enhanced chat interaction — user can converse with and intervene on sub-agents during execution
-- [ ] Multi-task parallel view — dashboard showing multiple tasks executing simultaneously
-- [ ] Task templates and experience accumulation — save successful orchestration patterns for reuse and evolution
-- [ ] GitHub open-source readiness — README, one-click startup, comprehensive docs, demo-ready polish
+- [ ] Agent tool use — OpenAI function calling with web search as first tool, agents do real work not just chat
+- [ ] Artifact rich rendering — agents produce structured outputs (tables, reports, diffs) as rich UI cards
+- [ ] Streaming agent output — real-time token streaming so users watch agents think and write
+- [ ] Inbound webhooks — trigger tasks from external events (Slack, GitHub, etc.)
 
 ### Out of Scope
 
@@ -40,12 +45,22 @@ Developers can experience a complete A2A multi-agent collaboration flow — from
 - Mobile app or responsive mobile UI — desktop-first developer tool
 - Real-time video/voice communication between agents — text-based A2A protocol focus
 
+## Current Milestone: v2.0 Wow Moment
+
+**Goal:** Make agents do real work and produce visible results — transform the demo from "agents chatting" to "agents working with real data and producing actionable outputs"
+
+**Target features:**
+- Agent Tool Use — OpenAI function calling with web search as first tool
+- Artifact Rich Rendering — agents produce structured outputs (tables, reports, code diffs) rendered as rich cards
+- Streaming Agent Output — real-time token streaming so users watch agents think and write
+- Inbound Webhooks — trigger tasks from external events (Slack, GitHub, etc.)
+
 ## Context
 
+- v1.0 shipped: foundation, agent status, parallel dashboard, chat intervention, demo readiness (6 phases complete)
 - A2A protocol ecosystem is still nascent with few reference implementations; TaskHub aims to fill this gap
-- Existing codebase is functional with core orchestration, execution, and streaming in place
-- Frontend interaction has known bugs and needs polish for demo-quality experience
-- Golutra project (sister repo) provides reference patterns for: agent status indicators, chat-driven interaction, multi-pane parallel observation, dispatch batching for concurrent agent management
+- Current agents are chat-only — no tool use, no structured outputs, no external data access
+- The demo needs a "wow moment" to differentiate from single-LLM chat experiences
 - Target audience is developers and technical community (GitHub open-source)
 - One-person-company philosophy: lean, focused, high-quality rather than feature-bloated
 
@@ -84,4 +99,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-04-04 after initialization*
+*Last updated: 2026-04-07 after milestone v2.0 start*
