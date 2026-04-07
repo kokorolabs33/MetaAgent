@@ -147,8 +147,8 @@ Plans:
 **UI hint**: yes
 
 Plans:
-- [ ] 08-01-PLAN.md — Artifact type contracts, markdown upgrade (react-markdown + remark-gfm + rehype-highlight), executor metadata pipeline
-- [ ] 08-02-PLAN.md — Rich artifact card components (SearchResultsCard, CodeBlock, TableCard, DataCard), copy/download actions, end-to-end verification
+- [x] 08-01-PLAN.md — Artifact type contracts, markdown upgrade (react-markdown + remark-gfm + rehype-highlight), executor metadata pipeline
+- [x] 08-02-PLAN.md — Rich artifact card components (SearchResultsCard, CodeBlock, TableCard, DataCard), copy/download actions, end-to-end verification
 
 ### Phase 9: Streaming Output
 **Goal**: Agent replies stream to the browser token-by-token so users watch agents think and write in real time instead of waiting for complete responses
