@@ -66,6 +66,11 @@ func (c *Client) Model() string {
 	return c.model
 }
 
+// APIKey returns the API key for direct HTTP calls (e.g., tool calling).
+func (c *Client) APIKey() string {
+	return c.apiKey
+}
+
 // Chat sends a single-shot request with a system prompt and user message,
 // returning the assistant's response text.
 func (c *Client) Chat(ctx context.Context, systemPrompt, userMessage string) (string, error) {
