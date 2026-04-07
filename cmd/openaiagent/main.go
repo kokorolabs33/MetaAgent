@@ -53,12 +53,12 @@ func getHistory(contextID string) []chatMessage {
 }
 
 // appendHistory appends messages to the conversation history for a contextID,
-// keeping at most 20 messages to avoid context overflow.
+// keeping at most 40 messages to accommodate tool call/result pairs.
 func appendHistory(contextID string, msgs ...chatMessage) {
 	existing := getHistory(contextID)
 	updated := append(existing, msgs...)
-	if len(updated) > 20 {
-		updated = updated[len(updated)-20:]
+	if len(updated) > 40 {
+		updated = updated[len(updated)-40:]
 	}
 	conversations.Store(contextID, updated)
 }
@@ -199,7 +199,20 @@ func handleSendMessage(_ context.Context, w http.ResponseWriter, req a2a.JSONRPC
 					msgs = append(msgs, getHistory(followContextID)...)
 					msgs = append(msgs, chatMessage{Role: "user", Content: text})
 
-					response, err := client.ChatWithHistory(context.Background(), msgs)
+					tools := GetToolsForRole(role.ID)
+
+					var response string
+					var updatedHistory []chatMessage
+					var err error
+
+					if len(tools) > 0 {
+						response, updatedHistory, err = client.ChatWithTools(
+							context.Background(), msgs, tools, nil, nil,
+						)
+					} else {
+						response, err = client.ChatWithHistory(context.Background(), msgs)
+					}
+
 					ts.mu.Lock()
 					defer ts.mu.Unlock()
 					if err != nil {
@@ -209,10 +222,14 @@ func handleSendMessage(_ context.Context, w http.ResponseWriter, req a2a.JSONRPC
 						ts.Status = "completed"
 						ts.Result = response
 						ts.CompletedAt = time.Now()
-						appendHistory(followContextID,
-							chatMessage{Role: "user", Content: text},
-							chatMessage{Role: "assistant", Content: response},
-						)
+						if updatedHistory != nil {
+							conversations.Store(followContextID, updatedHistory)
+						} else {
+							appendHistory(followContextID,
+								chatMessage{Role: "user", Content: text},
+								chatMessage{Role: "assistant", Content: response},
+							)
+						}
 					}
 					scheduleCleanup(ts.ID)
 				}()
@@ -252,7 +269,20 @@ func handleSendMessage(_ context.Context, w http.ResponseWriter, req a2a.JSONRPC
 		msgs = append(msgs, getHistory(contextID)...)
 		msgs = append(msgs, chatMessage{Role: "user", Content: text})
 
-		response, err := client.ChatWithHistory(context.Background(), msgs)
+		tools := GetToolsForRole(role.ID)
+
+		var response string
+		var updatedHistory []chatMessage
+		var err error
+
+		if len(tools) > 0 {
+			response, updatedHistory, err = client.ChatWithTools(
+				context.Background(), msgs, tools, nil, nil,
+			)
+		} else {
+			response, err = client.ChatWithHistory(context.Background(), msgs)
+		}
+
 		ts.mu.Lock()
 		defer ts.mu.Unlock()
 		if err != nil {
@@ -263,10 +293,15 @@ func handleSendMessage(_ context.Context, w http.ResponseWriter, req a2a.JSONRPC
 			ts.Status = "completed"
 			ts.Result = response
 			ts.CompletedAt = time.Now()
-			appendHistory(contextID,
-				chatMessage{Role: "user", Content: text},
-				chatMessage{Role: "assistant", Content: response},
-			)
+			// Store the full history including tool call/result messages
+			if updatedHistory != nil {
+				conversations.Store(contextID, updatedHistory)
+			} else {
+				appendHistory(contextID,
+					chatMessage{Role: "user", Content: text},
+					chatMessage{Role: "assistant", Content: response},
+				)
+			}
 			log.Printf("[%s] task %s completed in %v", role.Name, taskID, ts.CompletedAt.Sub(ts.CreatedAt))
 		}
 		scheduleCleanup(taskID)
