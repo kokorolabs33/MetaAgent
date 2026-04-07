@@ -139,6 +139,9 @@ export interface WorkflowTemplate {
   is_active: boolean;
   created_at: string;
   updated_at: string;
+  usage_count?: number;
+  success_rate?: number;
+  avg_duration_sec?: number;
 }
 
 export interface Policy {

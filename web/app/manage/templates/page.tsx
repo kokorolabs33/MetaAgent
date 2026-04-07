@@ -4,6 +4,17 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { api } from "@/lib/api";
 import type { WorkflowTemplate } from "@/lib/types";
+import { cn } from "@/lib/utils";
+
+function formatDuration(seconds: number): string {
+  if (seconds < 60) return `${Math.round(seconds)}s`;
+  const min = Math.floor(seconds / 60);
+  const sec = Math.round(seconds % 60);
+  if (min < 60) return `${min}m ${sec}s`;
+  const hr = Math.floor(min / 60);
+  const remMin = min % 60;
+  return `${hr}h ${remMin}m`;
+}
 
 export default function ManageTemplatesPage() {
   const [templates, setTemplates] = useState<WorkflowTemplate[]>([]);
@@ -62,6 +73,18 @@ export default function ManageTemplatesPage() {
                     </span>
                   </div>
                 </div>
+                {(t.usage_count !== undefined && t.usage_count > 0) && (
+                  <div className="mt-2 flex items-center gap-4 text-xs text-muted-foreground">
+                    <span>{t.usage_count} uses</span>
+                    <span className={cn(
+                      (t.success_rate ?? 0) > 80 ? "text-green-400" :
+                      (t.success_rate ?? 0) > 50 ? "text-amber-400" : "text-red-400"
+                    )}>
+                      {t.success_rate ?? 0}% success
+                    </span>
+                    <span>{formatDuration(t.avg_duration_sec ?? 0)} avg</span>
+                  </div>
+                )}
               </Link>
             ))}
           </div>

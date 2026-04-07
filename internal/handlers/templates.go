@@ -18,37 +18,57 @@ type TemplateHandler struct {
 	DB *pgxpool.Pool
 }
 
+// templateWithStats embeds WorkflowTemplate with usage statistics from template_executions.
+type templateWithStats struct {
+	models.WorkflowTemplate
+	UsageCount     int     `json:"usage_count"`
+	SuccessRate    float64 `json:"success_rate"`
+	AvgDurationSec float64 `json:"avg_duration_sec"`
+}
+
 // List handles GET /api/templates.
 func (h *TemplateHandler) List(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.DB.Query(r.Context(),
-		`SELECT id, name, description, version, steps, variables, source_task_id, is_active, created_at, updated_at
-		 FROM workflow_templates ORDER BY updated_at DESC`)
+		`SELECT wt.id, wt.name, wt.description, wt.version, wt.steps, wt.variables,
+		        wt.source_task_id, wt.is_active, wt.created_at, wt.updated_at,
+		        COUNT(te.id) AS usage_count,
+		        COALESCE(
+		          ROUND(100.0 * SUM(CASE WHEN te.outcome = 'completed' THEN 1 ELSE 0 END) / NULLIF(COUNT(te.id), 0)),
+		          0
+		        ) AS success_rate,
+		        COALESCE(AVG(te.duration_seconds), 0) AS avg_duration_sec
+		 FROM workflow_templates wt
+		 LEFT JOIN template_executions te ON te.template_id = wt.id
+		 GROUP BY wt.id, wt.name, wt.description, wt.version, wt.steps, wt.variables,
+		          wt.source_task_id, wt.is_active, wt.created_at, wt.updated_at
+		 ORDER BY wt.updated_at DESC`)
 	if err != nil {
 		jsonError(w, "query failed", http.StatusInternalServerError)
 		return
 	}
 	defer rows.Close()
 
-	templates := make([]models.WorkflowTemplate, 0)
+	templates := make([]templateWithStats, 0)
 	for rows.Next() {
-		var t models.WorkflowTemplate
+		var ts templateWithStats
 		var steps, variables []byte
 		var sourceTaskID *string
-		if err := rows.Scan(&t.ID, &t.Name, &t.Description, &t.Version,
-			&steps, &variables, &sourceTaskID, &t.IsActive, &t.CreatedAt, &t.UpdatedAt); err != nil {
+		if err := rows.Scan(&ts.ID, &ts.Name, &ts.Description, &ts.Version,
+			&steps, &variables, &sourceTaskID, &ts.IsActive, &ts.CreatedAt, &ts.UpdatedAt,
+			&ts.UsageCount, &ts.SuccessRate, &ts.AvgDurationSec); err != nil {
 			jsonError(w, "scan failed", http.StatusInternalServerError)
 			return
 		}
 		if steps != nil {
-			t.Steps = json.RawMessage(steps)
+			ts.Steps = json.RawMessage(steps)
 		}
 		if variables != nil {
-			t.Variables = json.RawMessage(variables)
+			ts.Variables = json.RawMessage(variables)
 		}
 		if sourceTaskID != nil {
-			t.SourceTaskID = *sourceTaskID
+			ts.SourceTaskID = *sourceTaskID
 		}
-		templates = append(templates, t)
+		templates = append(templates, ts)
 	}
 	if rows.Err() != nil {
 		jsonError(w, "rows error", http.StatusInternalServerError)
