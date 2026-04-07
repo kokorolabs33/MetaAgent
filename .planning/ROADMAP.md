@@ -128,7 +128,11 @@ Plans:
   2. The chat feed shows tool call events as they happen — user sees "Searching for: [query]..." before the agent's final response arrives
   3. Different agent roles have different tool sets visible in their responses (e.g., Engineering agent can analyze code, Marketing agent searches the web)
   4. Multi-turn tool use works correctly — an agent can call a tool, process results, call another tool, and produce a final response without conversation corruption
-**Plans**: TBD
+**Plans**: 2 plans
+
+Plans:
+- [ ] 07-01-PLAN.md — Tool registry, ChatWithTools method, Tavily web search, per-role tool sets
+- [ ] 07-02-PLAN.md — SSE tool call events, frontend inline status component, end-to-end verification
 
 ### Phase 8: Artifact Rendering
 **Goal**: Structured agent outputs render as rich, interactive UI cards instead of raw text — making tool results and agent work visually compelling
@@ -179,7 +183,7 @@ Phases execute in numeric order: 7 → 8 → 9 → 10
 | 4. Parallel Dashboard | v1.0 | 3/3 | Complete | 2026-04-06 |
 | 5. Chat Intervention | v1.0 | 2/2 | Complete | 2026-04-06 |
 | 6. Demo Readiness | v1.0 | 4/4 | Complete | 2026-04-07 |
-| 7. Agent Tool Use | v2.0 | 0/TBD | Not started | - |
+| 7. Agent Tool Use | v2.0 | 0/2 | Planned | - |
 | 8. Artifact Rendering | v2.0 | 0/TBD | Not started | - |
 | 9. Streaming Output | v2.0 | 0/TBD | Not started | - |
 | 10. Inbound Webhooks | v2.0 | 0/TBD | Not started | - |
