@@ -23,6 +23,7 @@ func (h *AuditLogHandler) List(w http.ResponseWriter, r *http.Request) {
 	taskID := r.URL.Query().Get("task_id")
 	agentID := r.URL.Query().Get("agent_id")
 	eventType := r.URL.Query().Get("type")
+	since := r.URL.Query().Get("since")
 	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
 	perPage, _ := strconv.Atoi(r.URL.Query().Get("per_page"))
 
@@ -52,6 +53,17 @@ func (h *AuditLogHandler) List(w http.ResponseWriter, r *http.Request) {
 		conditions = append(conditions, fmt.Sprintf("type ILIKE $%d", argN))
 		args = append(args, "%"+eventType+"%")
 		argN++
+	}
+
+	switch since {
+	case "1h":
+		conditions = append(conditions, "created_at > NOW() - INTERVAL '1 hour'")
+	case "today":
+		conditions = append(conditions, "created_at >= DATE_TRUNC('day', NOW())")
+	case "7d":
+		conditions = append(conditions, "created_at > NOW() - INTERVAL '7 days'")
+	case "30d":
+		conditions = append(conditions, "created_at > NOW() - INTERVAL '30 days'")
 	}
 
 	where := ""

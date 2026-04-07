@@ -57,6 +57,7 @@ export default function AuditLogPage() {
   const [taskFilter, setTaskFilter] = useState("");
   const [agentFilter, setAgentFilter] = useState("");
   const [typeFilter, setTypeFilter] = useState("");
+  const [sinceFilter, setSinceFilter] = useState<string>("");
   const [page, setPage] = useState(1);
   const perPage = 50;
 
@@ -68,6 +69,7 @@ export default function AuditLogPage() {
         task_id: taskFilter || undefined,
         agent_id: agentFilter || undefined,
         type: typeFilter || undefined,
+        since: sinceFilter || undefined,
         page,
         per_page: perPage,
       });
@@ -79,7 +81,7 @@ export default function AuditLogPage() {
     } finally {
       setIsLoading(false);
     }
-  }, [taskFilter, agentFilter, typeFilter, page]);
+  }, [taskFilter, agentFilter, typeFilter, sinceFilter, page]);
 
   useEffect(() => {
     void loadData();
@@ -108,6 +110,37 @@ export default function AuditLogPage() {
       <div className="flex items-center gap-3">
         <ScrollText className="size-6 text-indigo-400" />
         <h1 className="text-2xl font-bold text-foreground">Audit Log</h1>
+      </div>
+
+      {/* Time Range Filter */}
+      <div>
+        <span className="mb-2 block text-xs text-muted-foreground">Time Range</span>
+        <div className="flex items-center gap-2">
+          {[
+            { label: "Last hour", value: "1h" },
+            { label: "Today", value: "today" },
+            { label: "7 days", value: "7d" },
+            { label: "30 days", value: "30d" },
+            { label: "All", value: "" },
+          ].map((preset) => (
+            <button
+              key={preset.label}
+              type="button"
+              onClick={() => {
+                setSinceFilter(preset.value);
+                setPage(1);
+              }}
+              className={cn(
+                "rounded-lg px-3 py-2 text-xs transition-colors",
+                sinceFilter === preset.value
+                  ? "bg-secondary text-white"
+                  : "text-gray-400 hover:bg-secondary/50 hover:text-gray-200"
+              )}
+            >
+              {preset.label}
+            </button>
+          ))}
+        </div>
       </div>
 
       {/* Filters */}

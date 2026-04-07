@@ -143,11 +143,12 @@ export const api = {
     },
   },
   auditLogs: {
-    list: (params?: { task_id?: string; agent_id?: string; type?: string; page?: number; per_page?: number }) => {
+    list: (params?: { task_id?: string; agent_id?: string; type?: string; since?: string; page?: number; per_page?: number }) => {
       const searchParams = new URLSearchParams();
       if (params?.task_id) searchParams.set("task_id", params.task_id);
       if (params?.agent_id) searchParams.set("agent_id", params.agent_id);
       if (params?.type) searchParams.set("type", params.type);
+      if (params?.since) searchParams.set("since", params.since);
       if (params?.page) searchParams.set("page", params.page.toString());
       if (params?.per_page) searchParams.set("per_page", params.per_page.toString());
       const qs = searchParams.toString();
