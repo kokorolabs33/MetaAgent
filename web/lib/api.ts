@@ -7,6 +7,7 @@ import type {
   ConversationListItem,
   DashboardData,
   DiscoveredAgent,
+  InboundWebhook,
   PaginatedAuditLogs,
   Task,
   TaskWithSubtasks,
@@ -164,6 +165,15 @@ export const api = {
     delete: (id: string) => del(`/api/webhooks/${id}`),
     test: (id: string) =>
       post<{ success: boolean; status_code?: number; error?: string }>(`/api/webhooks/${id}/test`, {}),
+  },
+  inboundWebhooks: {
+    list: () => get<InboundWebhook[]>("/api/inbound-webhooks"),
+    get: (id: string) => get<InboundWebhook>(`/api/inbound-webhooks/${id}`),
+    create: (data: { name: string; provider: string }) =>
+      post<InboundWebhook>("/api/inbound-webhooks", data),
+    update: (id: string, data: Partial<InboundWebhook> & { rotate_secret?: boolean }) =>
+      put<InboundWebhook>(`/api/inbound-webhooks/${id}`, data),
+    delete: (id: string) => del(`/api/inbound-webhooks/${id}`),
   },
   conversations: {
     list: () => get<ConversationListItem[]>("/api/conversations"),

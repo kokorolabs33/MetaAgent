@@ -334,3 +334,17 @@ export interface WebhookConfig {
   secret: string;
   created_at: string;
 }
+
+// Inbound Webhooks
+
+export interface InboundWebhook {
+  id: string;
+  name: string;
+  provider: string;
+  secret: string;
+  previous_secret: string;
+  is_active: boolean;
+  created_by: string;
+  endpoint_url: string;
+  created_at: string;
+}
