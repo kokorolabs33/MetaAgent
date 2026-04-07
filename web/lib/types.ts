@@ -141,6 +141,53 @@ export interface ToolCallEvent {
   created_at: string;
 }
 
+// Artifact Types (Phase 8: Artifact Rendering)
+
+export interface SearchResult {
+  title: string;
+  url: string;
+  snippet: string;
+}
+
+export interface SearchResultsArtifact {
+  type: "search_results";
+  title?: string;
+  data: SearchResult[];
+}
+
+export interface CodeArtifact {
+  type: "code";
+  title?: string;
+  data: {
+    language: string;
+    code: string;
+    filename?: string;
+  };
+}
+
+export interface TableArtifact {
+  type: "table";
+  title?: string;
+  data: {
+    headers: string[];
+    rows: string[][];
+  };
+}
+
+export interface DataArtifact {
+  type: "data";
+  title?: string;
+  data: Record<string, unknown>;
+}
+
+export type Artifact =
+  | SearchResultsArtifact
+  | CodeArtifact
+  | TableArtifact
+  | DataArtifact;
+
+export type ArtifactType = Artifact["type"];
+
 export interface WorkflowTemplate {
   id: string;
   name: string;
