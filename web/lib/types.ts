@@ -128,6 +128,19 @@ export interface Message {
   created_at: string;
 }
 
+// Tool Call Events (SSE real-time visibility)
+export interface ToolCallEvent {
+  id: string;
+  subtask_id: string;
+  agent_id: string;
+  agent_name?: string;
+  tool_name: string;
+  status: "started" | "completed";
+  args?: string;
+  summary?: string;
+  created_at: string;
+}
+
 export interface WorkflowTemplate {
   id: string;
   name: string;

@@ -9,6 +9,7 @@ import type {
   SubTask,
   Message,
   TaskEvent,
+  ToolCallEvent,
 } from "./types";
 import { connectSSE, connectAgentStatusSSE, connectMultiTaskSSE } from "./sse";
 import type { AgentActivityStatus } from "./types";
@@ -95,6 +96,7 @@ interface TaskStore {
   currentTask: TaskWithSubtasks | null;
   messages: Message[];
   typingAgents: Record<string, string>; // agent_id -> agent_name
+  toolCallEvents: ToolCallEvent[];
   isLoading: boolean;
   sseDisconnect: (() => void) | null;
 
@@ -116,6 +118,7 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
   currentTask: null,
   messages: [],
   typingAgents: {},
+  toolCallEvents: [],
   isLoading: false,
   sseDisconnect: null,
 
@@ -150,7 +153,7 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
         api.tasks.get(taskId),
         api.messages.list(taskId),
       ]);
-      set({ currentTask: task, messages, isLoading: false });
+      set({ currentTask: task, messages, toolCallEvents: [], isLoading: false });
     } catch {
       set({ isLoading: false });
     }
@@ -279,6 +282,37 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
           });
         }
       }
+    }
+
+    // Handle tool call events (D-07: real-time tool visibility)
+    if (event.type === "tool.call_started") {
+      const data = event.data as Record<string, unknown>;
+      const toolEvent: ToolCallEvent = {
+        id: event.id || crypto.randomUUID(),
+        subtask_id: event.subtask_id || "",
+        agent_id: event.actor_id || "",
+        tool_name: (data.tool_name as string) || "unknown",
+        status: "started",
+        args: data.args as string | undefined,
+        created_at: event.created_at || new Date().toISOString(),
+      };
+      set((s) => ({
+        toolCallEvents: [...s.toolCallEvents, toolEvent],
+      }));
+      return;
+    }
+
+    if (event.type === "tool.call_completed") {
+      const data = event.data as Record<string, unknown>;
+      const toolName = (data.tool_name as string) || "unknown";
+      set((s) => ({
+        toolCallEvents: s.toolCallEvents.map((evt) =>
+          evt.tool_name === toolName && evt.status === "started"
+            ? { ...evt, status: "completed" as const, summary: (data.summary as string) || "Done" }
+            : evt,
+        ),
+      }));
+      return;
     }
 
     // Add messages from message events (deduplicate by message_id)

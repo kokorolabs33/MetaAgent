@@ -10,11 +10,12 @@ import {
 import { Send, AlertCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ChatMessage } from "./ChatMessage";
+import { ToolCallStatus } from "./ToolCallStatus";
 import { TypingIndicator } from "./TypingIndicator";
 import { AgentStatusDot } from "@/components/agent/AgentStatusDot";
 import { cn } from "@/lib/utils";
 import { useTaskStore } from "@/lib/store";
-import type { Message, SubTask } from "@/lib/types";
+import type { Message, SubTask, ToolCallEvent } from "@/lib/types";
 
 interface GroupChatProps {
   taskId: string;
@@ -41,13 +42,14 @@ export function GroupChat({
 
   const sendMessage = useTaskStore((s) => s.sendMessage);
   const typingAgents = useTaskStore((s) => s.typingAgents);
+  const toolCallEvents = useTaskStore((s) => s.toolCallEvents);
 
-  // Auto-scroll to bottom on new messages
+  // Auto-scroll to bottom on new messages or tool call events
   useEffect(() => {
     if (feedRef.current) {
       feedRef.current.scrollTop = feedRef.current.scrollHeight;
     }
-  }, [messages.length]);
+  }, [messages.length, toolCallEvents.length]);
 
   // Check if any subtask is waiting for input
   const hasWaitingSubtask = useMemo(
@@ -82,6 +84,20 @@ export function GroupChat({
     const lower = mentionFilter.toLowerCase();
     return base.filter((a) => a.name.toLowerCase().includes(lower));
   }, [agentsWithStatus, mentionFilter, subtasks]);
+
+  // Merge messages and tool call events into a single chronological timeline
+  const feedItems = useMemo(() => {
+    const items: Array<{ type: "message"; data: Message } | { type: "tool"; data: ToolCallEvent }> = [
+      ...messages.map((m) => ({ type: "message" as const, data: m })),
+      ...toolCallEvents.map((e) => ({ type: "tool" as const, data: e })),
+    ];
+    items.sort((a, b) => {
+      const aTime = a.data.created_at || "";
+      const bTime = b.data.created_at || "";
+      return aTime.localeCompare(bTime);
+    });
+    return items;
+  }, [messages, toolCallEvents]);
 
   const handleInputChange = useCallback(
     (e: React.ChangeEvent<HTMLTextAreaElement>) => {
@@ -226,14 +242,20 @@ export function GroupChat({
 
       {/* Message feed */}
       <div ref={feedRef} className="flex-1 overflow-y-auto py-2">
-        {messages.length === 0 ? (
+        {feedItems.length === 0 ? (
           <div className="flex h-full items-center justify-center">
             <p className="text-sm text-muted-foreground">
               No messages yet. Start the conversation!
             </p>
           </div>
         ) : (
-          messages.map((msg) => <ChatMessage key={msg.id} message={msg} />)
+          feedItems.map((item) =>
+            item.type === "message" ? (
+              <ChatMessage key={item.data.id} message={item.data as Message} />
+            ) : (
+              <ToolCallStatus key={item.data.id} event={item.data as ToolCallEvent} />
+            ),
+          )
         )}
       </div>
 
