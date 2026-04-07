@@ -666,7 +666,14 @@ func (e *DAGExecutor) handleA2AResult(
 					outputStr = unquoted
 				}
 			}
-			e.publishMessage(ctx, task.ID, agent.ID, agent.Name, outputStr)
+
+			// Try to detect structured artifacts in the output
+			metadata := detectArtifactMetadata(outputStr)
+			if metadata != nil {
+				e.publishMessageWithMetadata(ctx, task.ID, agent.ID, agent.Name, outputStr, metadata)
+			} else {
+				e.publishMessage(ctx, task.ID, agent.ID, agent.Name, outputStr)
+			}
 		}
 		e.publishSystemMessage(ctx, task.ID, fmt.Sprintf("%s completed the task", agent.Name))
 
@@ -895,7 +902,14 @@ func (e *DAGExecutor) SendFollowUp(ctx context.Context, taskID, subtaskID, agent
 					outputStr = unquoted
 				}
 			}
-			e.publishMessage(ctx, taskID, agentID, agentName, outputStr)
+
+			// Try to detect structured artifacts in the output
+			metadata := detectArtifactMetadata(outputStr)
+			if metadata != nil {
+				e.publishMessageWithMetadata(ctx, taskID, agentID, agentName, outputStr, metadata)
+			} else {
+				e.publishMessage(ctx, taskID, agentID, agentName, outputStr)
+			}
 		}
 		e.publishSystemMessage(ctx, taskID, fmt.Sprintf("%s completed the task", agentName))
 
@@ -1480,4 +1494,72 @@ func (e *DAGExecutor) publishMessage(ctx context.Context, taskID, senderID, send
 		"sender_name": senderName,
 		"content":     content,
 	})
+}
+
+// publishMessageWithMetadata inserts a message with metadata into the messages table and publishes it as an event.
+func (e *DAGExecutor) publishMessageWithMetadata(ctx context.Context, taskID, senderID, senderName, content string, metadata map[string]any) {
+	msgID := uuid.New().String()
+	now := time.Now()
+
+	var conversationID string
+	if taskID != "" {
+		_ = e.DB.QueryRow(ctx, `SELECT COALESCE(conversation_id, '') FROM tasks WHERE id = $1`, taskID).Scan(&conversationID)
+	}
+
+	metadataJSON, err := json.Marshal(metadata)
+	if err != nil {
+		metadataJSON = []byte("{}")
+	}
+
+	_, err = e.DB.Exec(ctx,
+		`INSERT INTO messages (id, task_id, conversation_id, sender_type, sender_id, sender_name, content, mentions, metadata, created_at)
+		 VALUES ($1, $2, $3, 'agent', $4, $5, $6, '{}', $7, $8)`,
+		msgID, taskID, conversationID, senderID, senderName, content, metadataJSON, now)
+	if err != nil {
+		log.Printf("executor: insert message with metadata: %v", err)
+		return
+	}
+
+	e.publishEvent(ctx, taskID, "", "message", "agent", senderID, map[string]any{
+		"message_id":  msgID,
+		"sender_name": senderName,
+		"content":     content,
+		"metadata":    metadata,
+	})
+}
+
+// detectArtifactMetadata inspects agent output for structured artifact markers.
+// Returns metadata map with "artifacts" key if structured data is found, nil otherwise.
+func detectArtifactMetadata(output string) map[string]any {
+	var raw map[string]any
+	if err := json.Unmarshal([]byte(output), &raw); err != nil {
+		return nil
+	}
+
+	artifacts, ok := raw["artifacts"]
+	if !ok {
+		return nil
+	}
+
+	artifactList, ok := artifacts.([]any)
+	if !ok || len(artifactList) == 0 {
+		return nil
+	}
+
+	valid := make([]any, 0, len(artifactList))
+	for _, a := range artifactList {
+		aMap, ok := a.(map[string]any)
+		if !ok {
+			continue
+		}
+		if _, hasType := aMap["type"]; hasType {
+			valid = append(valid, aMap)
+		}
+	}
+
+	if len(valid) == 0 {
+		return nil
+	}
+
+	return map[string]any{"artifacts": valid}
 }

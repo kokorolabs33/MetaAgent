@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Inter } from "next/font/google";
 import "./globals.css";
+import "highlight.js/styles/github-dark.css";
 import { AppShell } from "@/components/AppShell";
 import { ToastProvider } from "@/components/ui/toast";
 
