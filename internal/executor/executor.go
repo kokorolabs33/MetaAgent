@@ -915,11 +915,13 @@ func (e *DAGExecutor) SendAdvisory(taskID, subtaskID, agentID, content string) {
 		advisoryContent += fmt.Sprintf("\n\nYour previous output: %s", prevOutput)
 	}
 
-	// Load A2A task ID and endpoint
-	var a2aTaskID, agentEndpoint string
+	// Load agent endpoint (we intentionally do NOT use the subtask's a2a_task_id —
+	// sending to the same A2A task would cause the main executor's poll loop to see
+	// the advisory completion as a subtask completion, triggering "completed the task")
+	var agentEndpoint string
 	err := e.DB.QueryRow(advCtx,
-		`SELECT s.a2a_task_id, a.endpoint FROM subtasks s JOIN agents a ON a.id = s.agent_id WHERE s.id = $1`,
-		subtaskID).Scan(&a2aTaskID, &agentEndpoint)
+		`SELECT a.endpoint FROM subtasks s JOIN agents a ON a.id = s.agent_id WHERE s.id = $1`,
+		subtaskID).Scan(&agentEndpoint)
 	if err != nil {
 		log.Printf("advisory: load subtask %s: %v", subtaskID, err)
 		e.publishAdvisoryError(advCtx, taskID, agentID, agentName, "could not reach the agent")
@@ -928,11 +930,13 @@ func (e *DAGExecutor) SendAdvisory(taskID, subtaskID, agentID, content string) {
 
 	parts := []a2a.MessagePart{a2a.TextPart(advisoryContent)}
 
-	// Send A2A message — use taskID as contextID for advisory (separate from executor)
-	result, err := e.A2AClient.SendMessage(advCtx, agentEndpoint, taskID, a2aTaskID, parts)
+	// Send A2A message with a NEW advisory-specific contextID and empty taskID.
+	// This creates a separate A2A task on the agent, isolated from the running subtask.
+	advContextID := fmt.Sprintf("advisory-%s-%s-%d", taskID, subtaskID, time.Now().UnixMilli())
+	result, err := e.A2AClient.SendMessage(advCtx, agentEndpoint, advContextID, "", parts)
 	if err != nil {
 		// Retry once (D-14)
-		result, err = e.A2AClient.SendMessage(advCtx, agentEndpoint, taskID, a2aTaskID, parts)
+		result, err = e.A2AClient.SendMessage(advCtx, agentEndpoint, advContextID, "", parts)
 		if err != nil {
 			log.Printf("advisory: a2a send to agent %s failed after retry: %v", agentID, err)
 			e.publishAdvisoryError(advCtx, taskID, agentID, agentName, "did not respond to the advisory message")
