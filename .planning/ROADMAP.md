@@ -131,8 +131,8 @@ Plans:
 **Plans**: 2 plans
 
 Plans:
-- [ ] 07-01-PLAN.md — Tool registry, ChatWithTools method, Tavily web search, per-role tool sets
-- [ ] 07-02-PLAN.md — SSE tool call events, frontend inline status component, end-to-end verification
+- [x] 07-01-PLAN.md — Tool registry, ChatWithTools method, Tavily web search, per-role tool sets
+- [x] 07-02-PLAN.md — SSE tool call events, frontend inline status component, end-to-end verification
 
 ### Phase 8: Artifact Rendering
 **Goal**: Structured agent outputs render as rich, interactive UI cards instead of raw text — making tool results and agent work visually compelling
