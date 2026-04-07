@@ -279,6 +279,11 @@ export function ChatMessage({ message }: ChatMessageProps) {
 
   const avatarColor = senderColors[message.sender_type] ?? senderColors.system;
 
+  const isAdvisory = useMemo(() => {
+    if (!message.metadata) return false;
+    return (message.metadata as Record<string, unknown>).advisory === true;
+  }, [message.metadata]);
+
   if (message.sender_type === "system") {
     return (
       <div className="flex items-start gap-3 px-4 py-2">
@@ -322,6 +327,11 @@ export function ChatMessage({ message }: ChatMessageProps) {
           <span className="text-sm font-medium text-foreground">
             {message.sender_name}
           </span>
+          {isAdvisory && (
+            <span className="rounded-full bg-blue-500/10 px-2 py-0.5 text-[10px] font-medium text-blue-400">
+              Advisory reply
+            </span>
+          )}
           <span className="text-[10px] text-muted-foreground">
             {formatTime(message.created_at)}
           </span>

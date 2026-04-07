@@ -99,7 +99,8 @@ export const api = {
   },
   messages: {
     list: (taskId: string) => get<Message[]>(`/api/tasks/${taskId}/messages`),
-    send: (taskId: string, content: string) => post<Message>(`/api/tasks/${taskId}/messages`, { content }),
+    send: (taskId: string, content: string) =>
+      post<Message | SendMessageResponse>(`/api/tasks/${taskId}/messages`, { content }),
   },
   templates: {
     list: () => get<WorkflowTemplate[]>("/api/templates"),
@@ -195,4 +196,15 @@ export interface PaginatedTasks {
   page: number;
   per_page: number;
   pages: number;
+}
+
+export interface SendMessageResponse {
+  message: Message;
+  advisory_errors: string[];
+}
+
+export function isSendMessageResponse(
+  result: Message | SendMessageResponse
+): result is SendMessageResponse {
+  return "advisory_errors" in result && "message" in result;
 }

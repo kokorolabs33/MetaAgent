@@ -1,7 +1,7 @@
 "use client";
 
 import { create } from "zustand";
-import { api } from "./api";
+import { api, isSendMessageResponse } from "./api";
 import type {
   Agent,
   Task,
@@ -163,7 +163,9 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
   },
 
   sendMessage: async (taskId, content) => {
-    const msg = await api.messages.send(taskId, content);
+    const result = await api.messages.send(taskId, content);
+    // Handle response using type guard -- no unsafe casts needed
+    const msg = isSendMessageResponse(result) ? result.message : result;
     // Optimistically add — SSE dedup will skip if it arrives again
     set((s) => {
       if (s.messages.some((m) => m.id === msg.id)) return s;
