@@ -160,6 +160,10 @@ func main() {
 	r.Get("/.well-known/agent-card.json", a2aConfigH.ServeAgentCard)
 	r.Post("/a2a", a2aServer.HandleJSONRPC)
 
+	// Internal agent-to-platform callback (no auth -- agents on same host)
+	streamingDeltaH := &handlers.StreamingDeltaHandler{DB: pool, Broker: broker}
+	r.Post("/api/internal/streaming-delta", streamingDeltaH.HandleDelta)
+
 	// Auth routes (public — no auth middleware)
 	r.Post("/api/auth/login", authH.SimpleLogin)
 	r.Post("/api/auth/google/login", authH.GoogleLogin)

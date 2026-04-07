@@ -584,6 +584,19 @@ func (e *DAGExecutor) runSubtask(
 		parts = append(parts, a2a.DataPart(upstreamData))
 	}
 
+	// If the agent supports streaming, include platform metadata so the agent
+	// can POST token deltas back to the platform server.
+	if agentHasCapability(agent, "streaming") {
+		streamMeta := map[string]any{
+			"_streaming_meta": map[string]string{
+				"parent_task_id": task.ID,
+				"subtask_id":     st.ID,
+				"agent_id":       agent.ID,
+			},
+		}
+		parts = append(parts, a2a.DataPart(streamMeta))
+	}
+
 	// Audit: agent call submitted
 	_ = e.Audit.Log(ctx, audit.Entry{
 		TaskID:       task.ID,
@@ -1091,6 +1104,17 @@ func (e *DAGExecutor) publishTransientEvent(taskID, eventType string, data map[s
 
 	// Broker-only — do NOT call EventStore.Save
 	e.Broker.Publish(evt)
+}
+
+// agentHasCapability checks whether an agent's capabilities list includes the
+// given capability string (e.g. "streaming").
+func agentHasCapability(agent models.Agent, cap string) bool {
+	for _, c := range agent.Capabilities {
+		if c == cap {
+			return true
+		}
+	}
+	return false
 }
 
 // Cancel cancels a running task by calling its cancel function.
