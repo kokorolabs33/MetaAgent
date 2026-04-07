@@ -143,8 +143,12 @@ Plans:
   2. Code blocks in agent output have syntax highlighting with language detection, and tables render as formatted HTML tables (not ASCII)
   3. Users can copy artifact content to clipboard or download it as a file with one click
   4. All markdown in agent messages renders with GFM support (tables, task lists, strikethrough) and syntax-highlighted code blocks
-**Plans**: TBD
+**Plans**: 2 plans
 **UI hint**: yes
+
+Plans:
+- [ ] 08-01-PLAN.md — Artifact type contracts, markdown upgrade (react-markdown + remark-gfm + rehype-highlight), executor metadata pipeline
+- [ ] 08-02-PLAN.md — Rich artifact card components (SearchResultsCard, CodeBlock, TableCard, DataCard), copy/download actions, end-to-end verification
 
 ### Phase 9: Streaming Output
 **Goal**: Agent replies stream to the browser token-by-token so users watch agents think and write in real time instead of waiting for complete responses
@@ -184,6 +188,6 @@ Phases execute in numeric order: 7 → 8 → 9 → 10
 | 5. Chat Intervention | v1.0 | 2/2 | Complete | 2026-04-06 |
 | 6. Demo Readiness | v1.0 | 4/4 | Complete | 2026-04-07 |
 | 7. Agent Tool Use | v2.0 | 0/2 | Planned | - |
-| 8. Artifact Rendering | v2.0 | 0/TBD | Not started | - |
+| 8. Artifact Rendering | v2.0 | 0/2 | Planned | - |
 | 9. Streaming Output | v2.0 | 0/TBD | Not started | - |
 | 10. Inbound Webhooks | v2.0 | 0/TBD | Not started | - |
