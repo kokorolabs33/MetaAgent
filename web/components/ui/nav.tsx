@@ -45,8 +45,8 @@ export function Nav() {
   return (
     <aside className="flex h-screen w-60 flex-col border-r border-border bg-gray-950">
       <div className="flex items-center gap-2.5 px-5 py-5">
-        <Image src="/logo.svg" alt="TaskHub" width={28} height={28} />
-        <span className="text-sm font-semibold text-white">TaskHub</span>
+        <Image src="/logo.svg" alt="MetaAgent" width={28} height={28} />
+        <span className="text-sm font-semibold text-white">MetaAgent</span>
       </div>
 
       <nav className="flex flex-1 flex-col gap-1 px-3">

@@ -129,6 +129,8 @@ export const useConversationStore = create<ConversationStore>((set, get) => ({
       if (s.messages.some((m) => m.id === msg.id)) return s;
       return { messages: [...s.messages, msg] };
     });
+    // Refresh sidebar to pick up auto-generated title
+    void get().loadConversations();
   },
 
   connectSSE: (id: string) => {
@@ -253,15 +255,88 @@ export const useConversationStore = create<ConversationStore>((set, get) => ({
       }
     }
 
+    // Handle tool call events — render as inline system messages
+    if (event.type === "tool.call_started") {
+      const data = event.data as Record<string, unknown>;
+      const toolName = (data.tool_name as string) || "unknown";
+      const toolArgs = (data.args as string) || "";
+      const toolMsgId = `tool-${event.subtask_id ?? event.task_id}-${toolName}-${Date.now()}`;
+      const displayArgs = toolArgs.length > 120 ? toolArgs.slice(0, 120) + "..." : toolArgs;
+      const content = toolName === "web_search"
+        ? `\u{1F50D} Searching: "${displayArgs}"`
+        : `\u{1F527} Using ${toolName}: ${displayArgs}`;
+      const msg: Message = {
+        id: toolMsgId,
+        task_id: event.task_id ?? "",
+        conversation_id: get().activeConversation?.id ?? "",
+        sender_type: "system",
+        sender_name: "Tool",
+        content,
+        mentions: [],
+        metadata: { tool_event: true, tool_name: toolName, tool_status: "started" },
+        created_at: event.created_at ?? new Date().toISOString(),
+      };
+      set((s) => ({ messages: [...s.messages, msg] }));
+      return;
+    }
+
+    if (event.type === "tool.call_completed") {
+      const data = event.data as Record<string, unknown>;
+      const toolName = (data.tool_name as string) || "unknown";
+      const summary = (data.summary as string) || "Done";
+      const displaySummary = summary.length > 100 ? summary.slice(0, 100) + "..." : summary;
+      // Try to update the most recent matching started message
+      set((s) => {
+        const idx = [...s.messages].reverse().findIndex(
+          (m) =>
+            m.metadata?.tool_event === true &&
+            m.metadata?.tool_name === toolName &&
+            m.metadata?.tool_status === "started",
+        );
+        if (idx !== -1) {
+          const realIdx = s.messages.length - 1 - idx;
+          const updated = [...s.messages];
+          updated[realIdx] = {
+            ...updated[realIdx],
+            content: `\u2705 ${toolName === "web_search" ? "Search" : toolName} complete: ${displaySummary}`,
+            metadata: { ...updated[realIdx].metadata, tool_status: "completed" },
+          };
+          return { messages: updated };
+        }
+        // No matching started message — add a standalone completion message
+        const msg: Message = {
+          id: `tool-done-${event.subtask_id ?? event.task_id}-${toolName}-${Date.now()}`,
+          task_id: event.task_id ?? "",
+          conversation_id: get().activeConversation?.id ?? "",
+          sender_type: "system",
+          sender_name: "Tool",
+          content: `\u2705 ${toolName === "web_search" ? "Search" : toolName} complete: ${displaySummary}`,
+          mentions: [],
+          metadata: { tool_event: true, tool_name: toolName, tool_status: "completed" },
+          created_at: event.created_at ?? new Date().toISOString(),
+        };
+        return { messages: [...s.messages, msg] };
+      });
+      return;
+    }
+
     // Handle approval events
     if (event.type === "approval.requested") {
-      set((s) => ({
-        tasks: s.tasks.map((t) =>
-          t.id === event.task_id
-            ? { ...t, status: "approval_required" as Task["status"] }
-            : t,
-        ),
-      }));
+      // Refetch tasks to get the plan data for the DAG preview
+      const { activeConversation } = get();
+      if (activeConversation) {
+        void api.conversations.tasks(activeConversation.id).then((tasks) => {
+          set({ tasks });
+        });
+      } else {
+        set((s) => ({
+          tasks: s.tasks.map((t) =>
+            t.id === event.task_id
+              ? { ...t, status: "approval_required" as Task["status"] }
+              : t,
+          ),
+        }));
+      }
     }
     if (event.type === "approval.resolved") {
       const { activeConversation } = get();

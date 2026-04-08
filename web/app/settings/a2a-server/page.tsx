@@ -45,7 +45,7 @@ export default function A2AServerPage() {
             <div>
               <h2 className="font-semibold text-card-foreground">A2A Server</h2>
               <p className="mt-1 text-sm text-muted-foreground">
-                When enabled, TaskHub exposes itself as an A2A agent
+                When enabled, MetaAgent exposes itself as an A2A agent
               </p>
             </div>
             <Button

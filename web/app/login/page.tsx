@@ -42,8 +42,8 @@ export default function LoginPage() {
     <div className="flex min-h-screen items-center justify-center bg-gray-950 px-4">
       <div className="w-full max-w-sm space-y-8">
         <div className="flex flex-col items-center gap-3">
-          <Image src="/logo.svg" alt="TaskHub" width={40} height={40} />
-          <h1 className="text-xl font-semibold text-white">Sign in to TaskHub</h1>
+          <Image src="/logo.svg" alt="MetaAgent" width={40} height={40} />
+          <h1 className="text-xl font-semibold text-white">Sign in to MetaAgent</h1>
           <p className="text-sm text-gray-400">
             Enter your email to get started
           </p>

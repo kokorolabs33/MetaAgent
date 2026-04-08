@@ -26,11 +26,11 @@ var toolSets = map[string][]ToolDefinition{}
 
 func init() {
 	webSearch := makeWebSearchTool()
-	codeAnalysis := makeStubTool("code_analysis",
+	codeAnalysis := makeDelegatedSearchTool("code_analysis",
 		"Analyze code structure, dependencies, and patterns",
 		`{"type":"object","properties":{"query":{"type":"string","description":"What to analyze about the code"}},"required":["query"],"additionalProperties":false}`,
 	)
-	competitorSearch := makeStubTool("competitor_search",
+	competitorSearch := makeDelegatedSearchTool("competitor_search",
 		"Search for competitor information and market positioning",
 		`{"type":"object","properties":{"query":{"type":"string","description":"Competitor or market query"}},"required":["query"],"additionalProperties":false}`,
 	)
@@ -61,14 +61,16 @@ func makeWebSearchTool() ToolDefinition {
 	}
 }
 
-// makeStubTool creates a tool that returns "not yet implemented" per D-13.
-func makeStubTool(name, description, paramsJSON string) ToolDefinition {
+// makeDelegatedSearchTool creates a tool that delegates to web search under the hood.
+// This lets role-specific tools (code_analysis, competitor_search) return real results
+// while keeping distinct tool names for observability.
+func makeDelegatedSearchTool(name, description, paramsJSON string) ToolDefinition {
 	return ToolDefinition{
 		Name:        name,
 		Description: description,
 		Parameters:  json.RawMessage(paramsJSON),
-		Execute: func(_ context.Context, _ json.RawMessage) (string, error) {
-			return fmt.Sprintf("Tool '%s' is not yet implemented. Please proceed without this tool and note that %s is planned for a future update.", name, name), nil
+		Execute: func(ctx context.Context, args json.RawMessage) (string, error) {
+			return executeWebSearch(ctx, args)
 		},
 	}
 }

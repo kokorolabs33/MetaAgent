@@ -20,6 +20,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/google/uuid"
+	"github.com/joho/godotenv"
 
 	"taskhub/internal/a2a"
 )
@@ -74,6 +75,8 @@ func appendHistory(contextID string, msgs ...chatMessage) {
 }
 
 func main() {
+	_ = godotenv.Load() // load .env if present (for TAVILY_API_KEY etc.)
+
 	roleFlag := flag.String("role", "", "agent role: engineering, finance, legal, marketing")
 	port := flag.Int("port", 0, "listen port (defaults to role's default port)")
 	flag.Parse()

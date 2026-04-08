@@ -353,9 +353,22 @@ func (h *ConversationHandler) SendMessage(w http.ResponseWriter, r *http.Request
 		h.Broker.Publish(evt)
 	}
 
-	// Touch conversation updated_at
-	_, _ = h.DB.Exec(r.Context(),
-		`UPDATE conversations SET updated_at = $1 WHERE id = $2`, now, convID)
+	// Auto-generate title from first message if conversation has no title
+	var currentTitle string
+	_ = h.DB.QueryRow(r.Context(),
+		`SELECT title FROM conversations WHERE id = $1`, convID).Scan(&currentTitle)
+	if currentTitle == "" {
+		autoTitle := content
+		if len(autoTitle) > 50 {
+			autoTitle = autoTitle[:50]
+		}
+		_, _ = h.DB.Exec(r.Context(),
+			`UPDATE conversations SET title = $1, updated_at = $2 WHERE id = $3`, autoTitle, now, convID)
+	} else {
+		// Touch conversation updated_at
+		_, _ = h.DB.Exec(r.Context(),
+			`UPDATE conversations SET updated_at = $1 WHERE id = $2`, now, convID)
+	}
 
 	// Handle orchestrator in background goroutine
 	go func() { //nolint:contextcheck // context.Background is intentional as orchestrator outlives the HTTP request

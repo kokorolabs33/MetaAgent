@@ -5,7 +5,6 @@ import { useSearchParams, usePathname, useRouter } from "next/navigation";
 import { Search } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
-import { NewTaskDialog } from "@/components/dashboard/NewTaskDialog";
 
 type TabKey = "all" | "running" | "completed" | "failed";
 
@@ -129,7 +128,6 @@ export function TaskFilterBar({ counts }: TaskFilterBarProps) {
             className="w-48 pl-8"
           />
         </div>
-        <NewTaskDialog />
       </div>
     </div>
   );

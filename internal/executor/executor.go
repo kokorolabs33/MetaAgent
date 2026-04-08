@@ -1553,10 +1553,43 @@ func (e *DAGExecutor) publishMessageWithMetadata(ctx context.Context, taskID, se
 }
 
 // detectArtifactMetadata inspects agent output for structured artifact markers.
+// Supports two formats:
+//  1. Entire output is JSON: {"artifacts": [...]}
+//  2. Mixed text + trailing JSON block after "---\n" separator
+//
 // Returns metadata map with "artifacts" key if structured data is found, nil otherwise.
 func detectArtifactMetadata(output string) map[string]any {
+	// Try 1: entire output is JSON
+	if result := parseArtifactJSON(output); result != nil {
+		return result
+	}
+
+	// Try 2: look for a trailing JSON block after "---" separator
+	if idx := strings.LastIndex(output, "\n---\n"); idx != -1 {
+		trailing := strings.TrimSpace(output[idx+5:])
+		if result := parseArtifactJSON(trailing); result != nil {
+			return result
+		}
+	}
+
+	// Try 3: look for a ```json code fence containing artifacts
+	if idx := strings.LastIndex(output, "```json"); idx != -1 {
+		end := strings.Index(output[idx+7:], "```")
+		if end != -1 {
+			block := strings.TrimSpace(output[idx+7 : idx+7+end])
+			if result := parseArtifactJSON(block); result != nil {
+				return result
+			}
+		}
+	}
+
+	return nil
+}
+
+// parseArtifactJSON attempts to parse a JSON string as an artifact container.
+func parseArtifactJSON(s string) map[string]any {
 	var raw map[string]any
-	if err := json.Unmarshal([]byte(output), &raw); err != nil {
+	if err := json.Unmarshal([]byte(s), &raw); err != nil {
 		return nil
 	}
 

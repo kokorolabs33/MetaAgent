@@ -100,6 +100,20 @@ export interface TaskWithSubtasks extends Task {
   subtasks: SubTask[];
 }
 
+// Plan preview (before subtasks are created in DB)
+export interface PlanSubTask {
+  id: string;
+  agent_id: string;
+  agent_name: string;
+  instruction: string;
+  depends_on: string[];
+}
+
+export interface ExecutionPlan {
+  summary: string;
+  subtasks: PlanSubTask[];
+}
+
 // Events
 
 export interface TaskEvent {

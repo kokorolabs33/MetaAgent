@@ -8,7 +8,7 @@ import { ToastProvider } from "@/components/ui/toast";
 const inter = Inter({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: "TaskHub",
+  title: "MetaAgent",
   description: "Enterprise multi-agent collaboration platform",
 };
 

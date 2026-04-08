@@ -18,7 +18,7 @@ import { api } from "@/lib/api";
 import { useConversationStore } from "@/lib/conversationStore";
 import { SubtaskDetailPanel } from "@/components/task/SubtaskDetailPanel";
 import { useAgentStore } from "@/lib/store";
-import type { Task, SubTask, TaskWithSubtasks } from "@/lib/types";
+import type { Task, SubTask, TaskWithSubtasks, ExecutionPlan, PlanSubTask } from "@/lib/types";
 
 const taskStatusConfig: Record<
   Task["status"],
@@ -111,7 +111,7 @@ export function DAGPanel() {
       return;
     }
     const active = tasks.find(
-      (t) => t.status === "running" || t.status === "planning",
+      (t) => t.status === "running" || t.status === "planning" || t.status === "approval_required",
     );
     const target = active ?? tasks[tasks.length - 1];
     if (target && target.id !== selectedTaskId) {
@@ -138,15 +138,12 @@ export function DAGPanel() {
     }
   }, [selectedTaskId, loadDetail]);
 
-  // Periodically refresh subtask status for active tasks
+  // Periodically refresh subtask status for active (non-terminal) tasks
+  const terminalStatuses = new Set(["completed", "failed", "cancelled"]);
   useEffect(() => {
     if (!selectedTaskId) return;
     const selectedTask = tasks.find((t) => t.id === selectedTaskId);
-    if (
-      !selectedTask ||
-      (selectedTask.status !== "running" && selectedTask.status !== "planning")
-    )
-      return;
+    if (!selectedTask || terminalStatuses.has(selectedTask.status)) return;
 
     const interval = setInterval(() => {
       void loadDetail(selectedTaskId);
@@ -154,16 +151,48 @@ export function DAGPanel() {
     return () => clearInterval(interval);
   }, [selectedTaskId, tasks, loadDetail]);
 
+  // Re-fetch task detail when the store's task status changes (via SSE events)
+  const storeTaskStatus = tasks.find((t) => t.id === selectedTaskId)?.status;
+  useEffect(() => {
+    if (selectedTaskId && storeTaskStatus) {
+      void loadDetail(selectedTaskId);
+    }
+  }, [selectedTaskId, storeTaskStatus, loadDetail]);
+
   const subtasks = useMemo(() => taskDetail?.subtasks ?? [], [taskDetail]);
   const waves = useMemo(() => groupIntoWaves(subtasks), [subtasks]);
+  const selectedTask = tasks.find((t) => t.id === selectedTaskId);
+
+  // Parse plan preview for approval_required tasks (subtasks not yet in DB)
+  const planPreview = useMemo((): ExecutionPlan | null => {
+    if (!selectedTask || selectedTask.status !== "approval_required") return null;
+    if (subtasks.length > 0) return null;
+    const plan = selectedTask.plan as unknown as ExecutionPlan | undefined;
+    if (!plan || !Array.isArray(plan.subtasks)) return null;
+    return plan;
+  }, [selectedTask, subtasks]);
+
+  const planWaves = useMemo(() => {
+    if (!planPreview) return [];
+    const fakeSubtasks: SubTask[] = planPreview.subtasks.map((ps) => ({
+      id: ps.id,
+      task_id: "",
+      agent_id: ps.agent_id,
+      instruction: ps.instruction,
+      depends_on: ps.depends_on ?? [],
+      status: "pending" as const,
+      attempt: 0,
+      max_attempts: 3,
+      created_at: "",
+    }));
+    return groupIntoWaves(fakeSubtasks);
+  }, [planPreview]);
 
   const completedCount = subtasks.filter(
     (s) => s.status === "completed",
   ).length;
   const total = subtasks.length;
   const pct = total > 0 ? Math.round((completedCount / total) * 100) : 0;
-
-  const selectedTask = tasks.find((t) => t.id === selectedTaskId);
 
   // Active selected subtask from detail
   const activeSelectedSubtask = useMemo(() => {
@@ -247,12 +276,49 @@ export function DAGPanel() {
         </div>
       </div>
 
-      {/* Subtask waves */}
+      {/* Subtask waves / Plan preview */}
       <div className="flex-1 overflow-y-auto px-3 py-2">
-        {isLoadingDetail && subtasks.length === 0 ? (
+        {isLoadingDetail && subtasks.length === 0 && !planPreview ? (
           <div className="flex items-center justify-center py-8">
             <Loader2 className="size-5 animate-spin text-muted-foreground" />
           </div>
+        ) : planPreview && planWaves.length > 0 ? (
+          <>
+            {planPreview.summary && (
+              <p className="mb-2 text-xs text-muted-foreground">
+                {planPreview.summary}
+              </p>
+            )}
+            {planWaves.map(({ wave, items }) => (
+              <div key={wave} className="mb-3">
+                <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-gray-500">
+                  Wave {wave + 1}
+                </div>
+                <div className="space-y-1">
+                  {items.map((st) => {
+                    const planSt = planPreview.subtasks.find((p) => p.id === st.id);
+                    const agentName = planSt?.agent_name || st.agent_id.slice(0, 8);
+                    return (
+                      <div
+                        key={st.id}
+                        className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs"
+                      >
+                        <Clock className="size-3.5 shrink-0 text-gray-400" />
+                        <span className="flex-1 truncate text-foreground">
+                          {agentName}
+                        </span>
+                        <span className="truncate text-muted-foreground max-w-[100px]">
+                          {st.instruction.length > 30
+                            ? `${st.instruction.slice(0, 30)}...`
+                            : st.instruction}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
+          </>
         ) : (
           waves.map(({ wave, items }) => (
             <div key={wave} className="mb-3">

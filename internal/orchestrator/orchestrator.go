@@ -16,10 +16,11 @@ type Orchestrator struct {
 	LLM *llm.Client
 }
 
-const planPrompt = `You are a task decomposition engine. Given a task and available agents, break the task into subtasks.
+const planPrompt = `You are a task decomposition engine. Given a task and available agents with their skills, break the task into subtasks.
 
 RULES:
 - Each subtask is assigned to exactly one agent by agent_id
+- Match subtasks to agents based on their skills — pick the agent whose skill best fits the subtask
 - Subtasks can depend on other subtasks (DAG - no cycles)
 - Use depends_on with subtask IDs to define execution order
 - Subtasks with no dependencies can run in parallel
@@ -27,7 +28,7 @@ RULES:
 - When a task involves multiple departments or perspectives, add a final synthesis subtask that depends on all previous subtasks to create a consolidated summary/recommendation
 - Return ONLY valid JSON, no markdown or explanation
 
-Available agents:
+Available agents and their skills:
 %s
 
 Respond with ONLY this JSON structure:
@@ -117,16 +118,30 @@ func (o *Orchestrator) Replan(ctx context.Context, task models.Task, failed mode
 	return &plan, nil
 }
 
-// buildAgentDescription formats agent info for the LLM prompt.
+// agentSkill mirrors the JSON structure stored in the agents.skills column.
+type agentSkill struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+}
+
+// buildAgentDescription formats agent info for the LLM prompt,
+// including discovered skills so the orchestrator can match tasks to capabilities.
 func buildAgentDescription(agents []models.Agent) string {
 	var sb strings.Builder
 	for _, a := range agents {
-		caps := "none"
-		if len(a.Capabilities) > 0 {
-			caps = strings.Join(a.Capabilities, ", ")
+		fmt.Fprintf(&sb, "- ID: %s | Name: %s | Description: %s\n", a.ID, a.Name, a.Description)
+
+		// Parse and include skills from the agent card.
+		if len(a.Skills) > 0 {
+			var skills []agentSkill
+			if json.Unmarshal(a.Skills, &skills) == nil && len(skills) > 0 {
+				sb.WriteString("  Skills:\n")
+				for _, s := range skills {
+					fmt.Fprintf(&sb, "    - %s: %s\n", s.Name, s.Description)
+				}
+			}
 		}
-		fmt.Fprintf(&sb, "- ID: %s | Name: %s | Capabilities: %s | Description: %s\n",
-			a.ID, a.Name, caps, a.Description)
 	}
 	return sb.String()
 }

@@ -123,8 +123,8 @@ export function ConversationSidebar() {
     <aside className="flex h-screen w-64 flex-col border-r border-border bg-gray-950">
       {/* Logo */}
       <div className="flex items-center gap-2.5 px-5 py-5">
-        <Image src="/logo.svg" alt="TaskHub" width={28} height={28} />
-        <span className="text-sm font-semibold text-white">TaskHub</span>
+        <Image src="/logo.svg" alt="MetaAgent" width={28} height={28} />
+        <span className="text-sm font-semibold text-white">MetaAgent</span>
       </div>
 
       {/* New Chat */}
@@ -168,14 +168,9 @@ export function ConversationSidebar() {
                     )}
                   >
                     <MessageSquare className="size-4 shrink-0" />
-                    <span className="flex-1 truncate">{conv.title}</span>
+                    <span className="flex-1 truncate">{conv.title || "New Chat"}</span>
                     <div className="flex items-center gap-1.5 shrink-0">
                       {statusIndicator(conv.latest_status)}
-                      {conv.task_count > 0 && (
-                        <span className="text-[10px] text-gray-500">
-                          {conv.task_count}
-                        </span>
-                      )}
                       <button
                         onClick={(e) => void handleDelete(e, conv.id)}
                         className="hidden rounded p-0.5 text-gray-500 transition-colors hover:text-red-400 group-hover:block"

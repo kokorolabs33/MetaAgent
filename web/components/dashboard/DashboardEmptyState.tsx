@@ -11,11 +11,11 @@ interface DashboardEmptyStateProps {
 const copy: Record<DashboardEmptyStateVariant, { heading: string; body: string }> = {
   all: {
     heading: "No tasks yet",
-    body: "Create your first task and watch AI agents collaborate in real time.",
+    body: "Send a message in the chat to create your first task.",
   },
   running: {
     heading: "No running tasks",
-    body: "Start a new task or check the All tab for existing work.",
+    body: "Send a message to start a task, or check the All tab for existing work.",
   },
   completed: {
     heading: "No completed tasks",

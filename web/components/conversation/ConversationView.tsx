@@ -10,10 +10,12 @@ import {
 import { Send, AlertCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ChatMessage } from "@/components/chat/ChatMessage";
+import { PlanReviewCard } from "./PlanReviewCard";
 import { TopBar } from "./TopBar";
 import { DAGPanel } from "./DAGPanel";
 import { useConversationStore } from "@/lib/conversationStore";
 import { useAgentStore } from "@/lib/store";
+import { api } from "@/lib/api";
 
 interface ConversationViewProps {
   conversationId: string;
@@ -70,10 +72,31 @@ export function ConversationView({ conversationId }: ConversationViewProps) {
     return allAgents.map((a) => ({ id: a.id, name: a.name }));
   }, [allAgents]);
 
+  const [isApproving, setIsApproving] = useState(false);
+
   // Check for tasks waiting for input
   const hasActiveTask = useMemo(
     () => tasks.some((t) => t.status === "running" || t.status === "planning"),
     [tasks],
+  );
+
+  // Check for tasks awaiting approval
+  const approvalTask = useMemo(
+    () => tasks.find((t) => t.status === "approval_required"),
+    [tasks],
+  );
+
+  const handleApproval = useCallback(
+    async (action: "approve" | "reject") => {
+      if (!approvalTask) return;
+      setIsApproving(true);
+      try {
+        await api.tasks.approve(approvalTask.id, action);
+      } finally {
+        setIsApproving(false);
+      }
+    },
+    [approvalTask],
   );
 
   // Filtered agents for @mention autocomplete
@@ -218,7 +241,7 @@ export function ConversationView({ conversationId }: ConversationViewProps) {
         {/* Chat area */}
         <div className="flex flex-1 flex-col">
           {/* Active task banner */}
-          {hasActiveTask && (
+          {hasActiveTask && !approvalTask && (
             <div className="flex items-center gap-2 border-b border-blue-500/30 bg-blue-500/10 px-4 py-2">
               <AlertCircle className="size-4 text-blue-400" />
               <span className="text-sm text-blue-300">
@@ -239,6 +262,15 @@ export function ConversationView({ conversationId }: ConversationViewProps) {
               messages.map((msg) => (
                 <ChatMessage key={msg.id} message={msg} />
               ))
+            )}
+            {/* Plan review card inline in chat */}
+            {approvalTask && (
+              <PlanReviewCard
+                task={approvalTask}
+                isApproving={isApproving}
+                onApprove={() => void handleApproval("approve")}
+                onReject={() => void handleApproval("reject")}
+              />
             )}
           </div>
 

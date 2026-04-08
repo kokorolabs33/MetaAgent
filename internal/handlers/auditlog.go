@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -106,11 +107,18 @@ func (h *AuditLogHandler) List(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var e auditEntry
 		var data []byte
-		if err := rows.Scan(&e.ID, &e.TaskID, &e.SubtaskID, &e.Type, &e.ActorType, &e.ActorID, &data, &e.CreatedAt); err != nil {
+		var createdAt interface{}
+		if err := rows.Scan(&e.ID, &e.TaskID, &e.SubtaskID, &e.Type, &e.ActorType, &e.ActorID, &data, &createdAt); err != nil {
 			continue
 		}
 		if data != nil {
 			e.Data = json.RawMessage(data)
+		}
+		switch v := createdAt.(type) {
+		case time.Time:
+			e.CreatedAt = v.Format(time.RFC3339)
+		case string:
+			e.CreatedAt = v
 		}
 		entries = append(entries, e)
 	}

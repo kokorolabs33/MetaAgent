@@ -57,7 +57,7 @@ export function EmptyState() {
       <div className="w-full max-w-2xl space-y-8 text-center">
         {/* Logo */}
         <div className="flex flex-col items-center gap-3">
-          <Image src="/logo.svg" alt="TaskHub" width={48} height={48} />
+          <Image src="/logo.svg" alt="MetaAgent" width={48} height={48} />
           <h1 className="text-2xl font-semibold text-foreground">
             How can I help?
           </h1>
