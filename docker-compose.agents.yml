@@ -1,0 +1,50 @@
+# docker-compose.agents.yml
+# OpenAI-powered A2A agents — 4 department roles
+#
+# Usage:
+#   OPENAI_API_KEY=<key> docker compose -f docker-compose.agents.yml up --build
+
+services:
+  engineering-agent:
+    build:
+      context: .
+      dockerfile: cmd/openaiagent/Dockerfile
+    command: ["--role=engineering", "--port=9001"]
+    ports:
+      - "9001:9001"
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+    restart: unless-stopped
+
+  finance-agent:
+    build:
+      context: .
+      dockerfile: cmd/openaiagent/Dockerfile
+    command: ["--role=finance", "--port=9002"]
+    ports:
+      - "9002:9002"
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+    restart: unless-stopped
+
+  legal-agent:
+    build:
+      context: .
+      dockerfile: cmd/openaiagent/Dockerfile
+    command: ["--role=legal", "--port=9003"]
+    ports:
+      - "9003:9003"
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+    restart: unless-stopped
+
+  marketing-agent:
+    build:
+      context: .
+      dockerfile: cmd/openaiagent/Dockerfile
+    command: ["--role=marketing", "--port=9004"]
+    ports:
+      - "9004:9004"
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+    restart: unless-stopped

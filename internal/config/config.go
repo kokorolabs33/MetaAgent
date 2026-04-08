@@ -15,6 +15,7 @@ type Config struct {
 	SessionSecret   string
 	SecretKey       string
 	AnthropicAPIKey string
+	OpenAIAPIKey    string
 	FrontendURL     string
 }
 
@@ -34,6 +35,7 @@ func Load() *Config {
 		SessionSecret:   getEnv("SESSION_SECRET", "change-me-in-production"),
 		SecretKey:       getEnv("TASKHUB_SECRET_KEY", ""),
 		AnthropicAPIKey: getEnv("ANTHROPIC_API_KEY", ""),
+		OpenAIAPIKey:    getEnv("OPENAI_API_KEY", ""),
 		FrontendURL:     getEnv("FRONTEND_URL", "http://localhost:3000"),
 	}
 }

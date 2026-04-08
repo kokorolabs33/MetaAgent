@@ -1,13 +1,14 @@
 import type { Metadata } from "next";
 import { Inter } from "next/font/google";
 import "./globals.css";
-import { Nav } from "@/components/ui/nav";
-import { OrgProvider } from "@/components/OrgProvider";
+import "highlight.js/styles/github-dark.css";
+import { AppShell } from "@/components/AppShell";
+import { ToastProvider } from "@/components/ui/toast";
 
 const inter = Inter({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: "TaskHub",
+  title: "MetaAgent",
   description: "Enterprise multi-agent collaboration platform",
 };
 
@@ -19,12 +20,9 @@ export default function RootLayout({
   return (
     <html lang="en" className="dark">
       <body className={`${inter.className} bg-gray-950 text-gray-100 min-h-screen`}>
-        <div className="flex h-screen overflow-hidden">
-          <Nav />
-          <main className="flex-1 overflow-auto">
-            <OrgProvider>{children}</OrgProvider>
-          </main>
-        </div>
+        <ToastProvider>
+          <AppShell>{children}</AppShell>
+        </ToastProvider>
       </body>
     </html>
   );

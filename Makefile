@@ -1,8 +1,13 @@
 .PHONY: dev dev-backend dev-frontend build build-backend build-frontend \
-       lint lint-backend lint-frontend check test clean
+       lint lint-backend lint-frontend check test clean agents
 
 # ─── Development ─────────────────────────────────────────────
-dev: dev-backend dev-frontend
+dev:
+	@echo "Starting backend and frontend..."
+	@trap 'kill 0' EXIT; \
+	$(MAKE) dev-backend & \
+	$(MAKE) dev-frontend & \
+	wait
 
 dev-backend:
 	go run ./cmd/server
@@ -69,6 +74,9 @@ db-reset:
 	dropdb taskhub 2>/dev/null || true
 	createdb taskhub
 
+seed-demo:
+	go run ./cmd/seeddemo
+
 # ─── Clean ───────────────────────────────────────────────────
 clean:
 	rm -f server
@@ -85,6 +93,15 @@ install-frontend:
 
 install-hooks:
 	@command -v pre-commit >/dev/null 2>&1 && pre-commit install || echo "pre-commit not installed, skipping hooks setup"
+
+# ─── Test Agents ────────────────────────────────────────────
+agents:
+	@trap 'kill 0' EXIT; \
+	go run ./cmd/openaiagent --role=engineering --port=9001 & \
+	go run ./cmd/openaiagent --role=finance --port=9002 & \
+	go run ./cmd/openaiagent --role=legal --port=9003 & \
+	go run ./cmd/openaiagent --role=marketing --port=9004 & \
+	wait
 
 # ─── Docker ──────────────────────────────────────────────────
 docker-build:

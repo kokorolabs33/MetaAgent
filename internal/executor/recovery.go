@@ -8,24 +8,20 @@ import (
 	"sync"
 	"time"
 
-	"taskhub/internal/adapter"
 	"taskhub/internal/models"
 )
 
 // Recover scans the database for in-progress tasks and resumes their execution.
-// Called once on server startup. It handles four recovery scenarios:
+// Called once on server startup. It handles three recovery scenarios:
 //
-//  1. Subtasks with status='running' and poll_job_id IS NOT NULL
-//     → Resume polling using the EXISTING poll_job_id (never re-Submit)
+//  1. Subtasks with status='running' and a2a_task_id IS NOT NULL
+//     → Query the agent via A2A GetTask to check current state
 //
-//  2. Subtasks with status='running' and poll_job_id IS NULL
-//     → Server crashed between Submit and storing job_id; mark as failed
+//  2. Subtasks with status='running' and a2a_task_id IS NULL
+//     → Server crashed between SendMessage and storing task_id; mark as failed
 //     → The retry logic will re-submit if attempts remain
 //
-//  3. Subtasks with status='waiting_for_input'
-//     → Re-register signal channels so Signal() works
-//
-//  4. Tasks with status='running'
+//  3. Tasks with status='running'
 //     → Create fresh cancel context and re-enter DAG loop
 func (e *DAGExecutor) Recover(ctx context.Context) {
 	// Find all tasks that were running when the server stopped
@@ -58,10 +54,10 @@ func (e *DAGExecutor) Recover(ctx context.Context) {
 	log.Printf("recovery: found %d running tasks to resume", len(taskIDs))
 
 	for _, taskID := range taskIDs {
-		// Mark orphaned running subtasks (no poll_job_id) as failed
+		// Mark orphaned running subtasks (no a2a_task_id) as failed
 		result, err := e.DB.Exec(ctx,
-			`UPDATE subtasks SET status = 'failed', error = 'server restarted before job submission completed'
-			 WHERE task_id = $1 AND status = 'running' AND (poll_job_id IS NULL OR poll_job_id = '')`, taskID)
+			`UPDATE subtasks SET status = 'failed', error = 'server restarted before A2A task ID stored'
+			 WHERE task_id = $1 AND status = 'running' AND (a2a_task_id IS NULL OR a2a_task_id = '')`, taskID)
 		if err != nil {
 			log.Printf("recovery: mark orphaned subtasks for task %s: %v", taskID, err)
 		} else if result.RowsAffected() > 0 {
@@ -80,8 +76,8 @@ func (e *DAGExecutor) Recover(ctx context.Context) {
 	log.Printf("recovery: initiated resume for %d tasks", len(taskIDs))
 }
 
-// resumeTask loads a task and its subtasks from the database, sets up cancel/signal
-// infrastructure, resumes polling for any in-progress subtasks, and re-enters the DAG loop.
+// resumeTask loads a task and its subtasks from the database, checks running subtasks
+// via A2A GetTask, and re-enters the DAG loop.
 func (e *DAGExecutor) resumeTask(parentCtx context.Context, taskID string) error {
 	// Load task from DB
 	task, err := e.loadTask(parentCtx, taskID)
@@ -95,8 +91,8 @@ func (e *DAGExecutor) resumeTask(parentCtx context.Context, taskID string) error
 		return fmt.Errorf("load subtasks: %w", err)
 	}
 
-	// Load agents for this org
-	agents, err := e.loadOrgAgents(parentCtx, task.OrgID)
+	// Load all active agents
+	agents, err := e.loadAgents(parentCtx)
 	if err != nil {
 		return fmt.Errorf("load agents: %w", err)
 	}
@@ -107,18 +103,16 @@ func (e *DAGExecutor) resumeTask(parentCtx context.Context, taskID string) error
 		agentMap[a.ID] = a
 	}
 
-	// Create cancellable context for this task
+	// Create cancellable context for this task.
+	// Note: runDAGLoop owns the cancel lifecycle (Store+Delete), so we just
+	// create the context here for recovery checks.
 	taskCtx, taskCancel := context.WithCancel(parentCtx)
-	e.cancels.Store(taskID, taskCancel)
-
-	// Channel to notify the DAG loop when subtasks change status
-	statusChangeCh := make(chan string, len(subtasks))
 
 	var wg sync.WaitGroup
 
-	// Resume running subtasks that have a poll_job_id (scenario 1)
+	// Check running subtasks that have an a2a_task_id via A2A GetTask
 	for _, st := range subtasks {
-		if st.Status != "running" || st.PollJobID == "" {
+		if st.Status != "running" || st.A2ATaskID == "" {
 			continue
 		}
 
@@ -130,109 +124,94 @@ func (e *DAGExecutor) resumeTask(parentCtx context.Context, taskID string) error
 			continue
 		}
 
-		handle := adapter.JobHandle{
-			JobID:          st.PollJobID,
-			StatusEndpoint: st.PollEndpoint,
-		}
-
 		stCopy := st
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			log.Printf("recovery: resuming poll for subtask %s (job %s)", stCopy.ID, handle.JobID)
-			e.pollSubtask(taskCtx, *task, stCopy, agent, handle, subtasks, agents, statusChangeCh)
-		}()
-	}
+			log.Printf("recovery: checking A2A task %s for subtask %s", stCopy.A2ATaskID, stCopy.ID)
 
-	// Re-register signal channels for waiting_for_input subtasks (scenario 3)
-	for _, st := range subtasks {
-		if st.Status != "waiting_for_input" {
-			continue
-		}
-
-		agent, ok := agentMap[st.AgentID]
-		if !ok {
-			log.Printf("recovery: agent %s not found for waiting subtask %s", st.AgentID, st.ID)
-			continue
-		}
-
-		handle := adapter.JobHandle{
-			JobID:          st.PollJobID,
-			StatusEndpoint: st.PollEndpoint,
-		}
-
-		// Re-register signal channel
-		inputCh := make(chan adapter.UserInput, 1)
-		e.signals.Store(st.ID, inputCh)
-
-		stCopy := st
-		adp := e.Adapters[agent.AdapterType]
-
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			log.Printf("recovery: re-waiting for input on subtask %s", stCopy.ID)
-
-			select {
-			case <-taskCtx.Done():
-				e.signals.Delete(stCopy.ID)
+			result, err := e.A2AClient.GetTask(taskCtx, agent.Endpoint, stCopy.A2ATaskID)
+			if err != nil {
+				log.Printf("recovery: GetTask failed for subtask %s: %v", stCopy.ID, err)
+				// Cannot reach agent — mark as failed for retry
+				_, _ = e.DB.Exec(taskCtx,
+					`UPDATE subtasks SET status = 'failed', error = $1 WHERE id = $2`,
+					fmt.Sprintf("recovery: agent unreachable: %v", err), stCopy.ID)
 				return
-			case userInput := <-inputCh:
-				e.signals.Delete(stCopy.ID)
+			}
 
-				// Send input to agent
-				if adp != nil {
-					if err := adp.SendInput(taskCtx, agent, handle, userInput); err != nil {
-						log.Printf("recovery: send input to subtask %s: %v", stCopy.ID, err)
-						e.failSubtask(taskCtx, taskID, stCopy.ID, fmt.Sprintf("send input failed: %v", err), subtasks)
-						select {
-						case statusChangeCh <- stCopy.ID:
-						default:
-						}
-						return
-					}
+			switch result.State {
+			case "completed":
+				now := time.Now()
+				output := result.Artifacts
+				if output == nil {
+					output = json.RawMessage(`null`)
 				}
+				_, _ = e.DB.Exec(taskCtx,
+					`UPDATE subtasks SET status = 'completed', output = $1, completed_at = $2 WHERE id = $3`,
+					output, now, stCopy.ID)
+				log.Printf("recovery: subtask %s completed during downtime", stCopy.ID)
 
-				// Resume to running status
-				_, _ = e.DB.Exec(taskCtx, `UPDATE subtasks SET status = 'running' WHERE id = $1`, stCopy.ID)
-				e.publishEvent(taskCtx, taskID, stCopy.ID, "subtask.input_provided", "user", "", map[string]any{
-					"message": userInput.Message,
-				})
+			case "failed":
+				_, _ = e.DB.Exec(taskCtx,
+					`UPDATE subtasks SET status = 'failed', error = $1 WHERE id = $2`,
+					result.Error, stCopy.ID)
+				log.Printf("recovery: subtask %s failed during downtime: %s", stCopy.ID, result.Error)
 
-				// Resume polling
-				if adp != nil {
-					e.pollSubtask(taskCtx, *task, stCopy, agent, handle, subtasks, agents, statusChangeCh)
-				}
+			case "input-required":
+				_, _ = e.DB.Exec(taskCtx,
+					`UPDATE subtasks SET status = 'input_required' WHERE id = $1`, stCopy.ID)
+				log.Printf("recovery: subtask %s is waiting for input", stCopy.ID)
+
+			default:
+				// Still working or unknown state — leave as running, DAG loop will handle
+				log.Printf("recovery: subtask %s still in state %q", stCopy.ID, result.State)
 			}
 		}()
 	}
 
-	// Re-enter the DAG loop to pick up any remaining work
-	// This runs in the current goroutine (already in a goroutine from Recover)
-	err = e.runDAGLoop(taskCtx, *task, subtasks, agents)
-
-	// Clean up
-	taskCancel()
-	e.cancels.Delete(taskID)
+	// Wait for all recovery checks to complete
 	wg.Wait()
 
-	return err
+	// Re-enter the DAG loop to pick up any remaining work.
+	// runDAGLoop creates its own child context and manages cancels Store/Delete.
+	// Cancel our recovery context once the DAG loop returns.
+	defer taskCancel()
+	return e.runDAGLoop(taskCtx, *task, subtasks, agents)
 }
 
 // loadTask loads a single task from the database.
 func (e *DAGExecutor) loadTask(ctx context.Context, taskID string) (*models.Task, error) {
 	var t models.Task
 	var completedAt *time.Time
+	var metadata, plan, result []byte
+	var taskError *string
 	err := e.DB.QueryRow(ctx,
-		`SELECT id, org_id, title, COALESCE(description,''), status, created_by,
-		        metadata, plan, result, COALESCE(error,''), replan_count, created_at, completed_at
+		`SELECT id, title, COALESCE(description,''), status, created_by,
+		        metadata, plan, result, error, replan_count,
+		        COALESCE(template_id,''), COALESCE(template_version,0),
+		        created_at, completed_at
 		 FROM tasks WHERE id = $1`, taskID).
-		Scan(&t.ID, &t.OrgID, &t.Title, &t.Description, &t.Status, &t.CreatedBy,
-			&t.Metadata, &t.Plan, &t.Result, &t.Error, &t.ReplanCount, &t.CreatedAt, &completedAt)
+		Scan(&t.ID, &t.Title, &t.Description, &t.Status, &t.CreatedBy,
+			&metadata, &plan, &result, &taskError, &t.ReplanCount,
+			&t.TemplateID, &t.TemplateVersion,
+			&t.CreatedAt, &completedAt)
 	if err != nil {
 		return nil, err
 	}
 	t.CompletedAt = completedAt
+	if metadata != nil {
+		t.Metadata = json.RawMessage(metadata)
+	}
+	if plan != nil {
+		t.Plan = json.RawMessage(plan)
+	}
+	if result != nil {
+		t.Result = json.RawMessage(result)
+	}
+	if taskError != nil {
+		t.Error = *taskError
+	}
 
 	// Ensure Metadata is not nil (for JSON serialization)
 	if t.Metadata == nil {

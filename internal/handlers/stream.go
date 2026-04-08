@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
+	"sync"
 
 	"github.com/go-chi/chi/v5"
 
@@ -28,6 +30,7 @@ func (h *StreamHandler) Stream(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -103,4 +106,132 @@ func writeSSEEvent(w http.ResponseWriter, evt *models.Event) {
 		return
 	}
 	fmt.Fprintf(w, "id: %s\ndata: %s\n\n", evt.ID, data)
+}
+
+// maxMultiStreamIDs caps how many task IDs a single multiplexed SSE request
+// may subscribe to. Sized to comfortably exceed the dashboard UI's 12-per-page
+// grid (per CONTEXT.md D-05) while bounding per-request memory (see T-04-02).
+const maxMultiStreamIDs = 50
+
+// MultiStream handles GET /api/tasks/stream?ids=a,b,c.
+//
+// It subscribes to each task's broker channel and fans all events out on a
+// single HTTP response writer, so the browser never opens more than one
+// task-stream connection regardless of how many cards the dashboard is
+// showing. Combined with /api/agents/stream that keeps the dashboard under
+// the 6-connections-per-domain browser cap.
+//
+// No replay: the dashboard's initial LIST API call provides the snapshot;
+// this stream only delivers live events after connect.
+func (h *StreamHandler) MultiStream(w http.ResponseWriter, r *http.Request) {
+	idsParam := strings.TrimSpace(r.URL.Query().Get("ids"))
+	if idsParam == "" {
+		jsonError(w, "ids query param required", http.StatusBadRequest)
+		return
+	}
+
+	// Parse, trim, deduplicate.
+	raw := strings.Split(idsParam, ",")
+	seen := make(map[string]struct{}, len(raw))
+	ids := make([]string, 0, len(raw))
+	for _, id := range raw {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	if len(ids) == 0 {
+		jsonError(w, "ids query param required", http.StatusBadRequest)
+		return
+	}
+	if len(ids) > maxMultiStreamIDs {
+		jsonError(w, "too many ids (max 50)", http.StatusBadRequest)
+		return
+	}
+
+	// SSE headers.
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		jsonError(w, "streaming not supported", http.StatusInternalServerError)
+		return
+	}
+
+	// Subscribe to every task BEFORE any other work (subscribe-before-replay
+	// pattern from Phase 1 D-01). No replay is needed for the dashboard —
+	// the LIST API is the snapshot.
+	type sub struct {
+		taskID string
+		ch     chan *models.Event
+	}
+	subs := make([]sub, 0, len(ids))
+	for _, id := range ids {
+		subs = append(subs, sub{taskID: id, ch: h.Broker.Subscribe(id)})
+	}
+	defer func() {
+		for _, s := range subs {
+			h.Broker.Unsubscribe(s.taskID, s.ch)
+		}
+	}()
+
+	// Fan-in: one goroutine per subscription drains its channel into a
+	// merged channel. Only the main loop writes to w, so SSE frames are
+	// never interleaved by concurrent goroutines (net/http requires serial
+	// writes).
+	ctx := r.Context()
+	merged := make(chan *models.Event, 64)
+	var wg sync.WaitGroup
+	for _, s := range subs {
+		wg.Add(1)
+		go func(s sub) {
+			defer wg.Done()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case evt, ok := <-s.ch:
+					if !ok {
+						return
+					}
+					select {
+					case merged <- evt:
+					case <-ctx.Done():
+						return
+					}
+				}
+			}
+		}(s)
+	}
+	// Close merged once all drainers exit (after ctx done + Unsubscribe
+	// closes their source channels).
+	go func() {
+		wg.Wait()
+		close(merged)
+	}()
+
+	// Flush headers so the EventSource opens immediately.
+	flusher.Flush()
+
+	// Single writer loop.
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case evt, ok := <-merged:
+			if !ok {
+				return
+			}
+			writeSSEEvent(w, evt)
+			flusher.Flush()
+		}
+	}
 }

@@ -13,7 +13,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"taskhub/internal/adapter"
 	"taskhub/internal/ctxutil"
 	"taskhub/internal/events"
 	"taskhub/internal/executor"
@@ -28,8 +27,8 @@ type MessageHandler struct {
 	Broker     *events.Broker
 }
 
-// mentionRe matches @mentions in message content.
-var mentionRe = regexp.MustCompile(`@(\S+)`)
+// mentionRe matches <@agent_id|Display Name> mentions in message content.
+var mentionRe = regexp.MustCompile(`<@([^|]+)\|[^>]+>`)
 
 // sendMessageRequest is the expected body for POST /tasks/{id}/messages.
 type sendMessageRequest struct {
@@ -85,7 +84,7 @@ func (h *MessageHandler) List(w http.ResponseWriter, r *http.Request) {
 }
 
 // Send handles POST /tasks/{id}/messages.
-// Creates a message, parses @mentions, and signals waiting subtasks if applicable.
+// Creates a message, parses @mentions, and routes to agents via A2A follow-up if applicable.
 func (h *MessageHandler) Send(w http.ResponseWriter, r *http.Request) {
 	taskID := chi.URLParam(r, "id")
 
@@ -103,11 +102,11 @@ func (h *MessageHandler) Send(w http.ResponseWriter, r *http.Request) {
 
 	user := ctxutil.UserFromCtx(r.Context())
 
-	// Extract @mentions from content.
+	// Extract agent IDs from <@id|name> mentions.
 	matches := mentionRe.FindAllStringSubmatch(content, -1)
 	mentions := make([]string, 0, len(matches))
 	for _, m := range matches {
-		mentions = append(mentions, m[1])
+		mentions = append(mentions, m[1]) // m[1] is the agent ID
 	}
 
 	now := time.Now().UTC()
@@ -143,60 +142,53 @@ func (h *MessageHandler) Send(w http.ResponseWriter, r *http.Request) {
 		h.Broker.Publish(evt)
 	}
 
-	// Check if any mention matches an agent with a waiting subtask.
-	// For each mentioned name, look up whether there's a waiting_for_input subtask
-	// assigned to an agent with that name.
+	// Route advisory messages to active agents via @mentions.
+	var advisoryErrors []string
 	if len(mentions) > 0 {
-		h.signalWaitingAgents(r.Context(), taskID, mentions, content)
+		advisoryErrors = h.routeAdvisory(r.Context(), taskID, mentions, content)
 	}
 
+	// Return message with any advisory validation errors (D-02).
+	// The message is ALWAYS saved regardless of validation — user messages are never discarded (Pitfall 6).
+	if len(advisoryErrors) > 0 {
+		jsonCreated(w, map[string]any{
+			"message":         msg,
+			"advisory_errors": advisoryErrors,
+		})
+		return
+	}
 	jsonCreated(w, msg)
 }
 
-// signalWaitingAgents checks if any mentioned agent names have waiting subtasks
-// and delivers the user input via the executor's Signal method.
-func (h *MessageHandler) signalWaitingAgents(ctx context.Context, taskID string, mentions []string, content string) {
-	// Query subtasks waiting for input along with their agent names.
-	rows, err := h.DB.Query(ctx,
-		`SELECT s.id, s.agent_id, a.name
-		 FROM subtasks s
-		 JOIN agents a ON a.id = s.agent_id
-		 WHERE s.task_id = $1 AND s.status = 'waiting_for_input'`, taskID)
-	if err != nil {
-		return
-	}
-	defer rows.Close()
+// routeAdvisory validates agent mentions and dispatches advisory messages.
+// Returns a list of error strings for agents that are not currently active (D-02).
+func (h *MessageHandler) routeAdvisory(ctx context.Context, taskID string, mentions []string, content string) []string {
+	var advisoryErrors []string
 
-	type waitingSubtask struct {
-		subtaskID string
-		agentID   string
-		agentName string
-	}
-
-	var waiting []waitingSubtask
-	for rows.Next() {
-		var ws waitingSubtask
-		if err := rows.Scan(&ws.subtaskID, &ws.agentID, &ws.agentName); err != nil {
+	for _, agentID := range mentions {
+		var subtaskID, agentName string
+		err := h.DB.QueryRow(ctx,
+			`SELECT s.id, a.name
+			 FROM subtasks s JOIN agents a ON a.id = s.agent_id
+			 WHERE s.task_id = $1 AND s.agent_id = $2 AND s.status IN ('running', 'input_required')
+			 ORDER BY s.created_at DESC
+			 LIMIT 1`, taskID, agentID).
+			Scan(&subtaskID, &agentName)
+		if err != nil {
+			// Agent not active — collect error (D-02)
+			var name string
+			_ = h.DB.QueryRow(ctx, `SELECT name FROM agents WHERE id = $1`, agentID).Scan(&name)
+			if name == "" {
+				name = "Agent"
+			}
+			advisoryErrors = append(advisoryErrors, fmt.Sprintf("%s is not currently executing — advisory messages can only be sent to active agents", name))
 			continue
 		}
-		waiting = append(waiting, ws)
-	}
-	if rows.Err() != nil {
-		return
+
+		// Route via advisory in detached goroutine (D-05 pattern, D-15 isolation).
+		// SendAdvisory takes NO ctx parameter — it creates its own background context internally (D-16).
+		go h.Executor.SendAdvisory(taskID, subtaskID, agentID, content)
 	}
 
-	// Match mentions against waiting agent names (case-insensitive).
-	mentionSet := make(map[string]bool, len(mentions))
-	for _, m := range mentions {
-		mentionSet[strings.ToLower(m)] = true
-	}
-
-	for _, ws := range waiting {
-		if mentionSet[strings.ToLower(ws.agentName)] {
-			_ = h.Executor.Signal(ctx, taskID, adapter.UserInput{
-				SubtaskID: ws.subtaskID,
-				Message:   fmt.Sprintf("User message: %s", content),
-			})
-		}
-	}
+	return advisoryErrors
 }

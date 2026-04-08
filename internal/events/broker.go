@@ -46,18 +46,67 @@ func (b *Broker) Unsubscribe(taskID string, ch chan *models.Event) {
 	}
 }
 
-// Publish sends an event to all subscribers of a task.
+// Publish sends an event to all subscribers of a task, and also to conversation-level
+// subscribers if the event has a ConversationID.
 // If a subscriber's channel is full, the event is dropped (they can catch up from DB).
 func (b *Broker) Publish(event *models.Event) {
 	b.mu.RLock()
-	subs := b.subscribers[event.TaskID]
+	taskSubs := b.subscribers[event.TaskID]
+	var convSubs []chan *models.Event
+	if event.ConversationID != "" {
+		convSubs = b.subscribers["conv:"+event.ConversationID]
+	}
+	b.mu.RUnlock()
+
+	for _, ch := range taskSubs {
+		select {
+		case ch <- event:
+		default:
+		}
+	}
+	for _, ch := range convSubs {
+		select {
+		case ch <- event:
+		default:
+		}
+	}
+}
+
+// SubscribeConversation returns a channel that receives events for a given conversation.
+// Call UnsubscribeConversation when done.
+func (b *Broker) SubscribeConversation(conversationID string) chan *models.Event {
+	return b.Subscribe("conv:" + conversationID)
+}
+
+// UnsubscribeConversation removes a channel from conversation subscriptions and closes it.
+func (b *Broker) UnsubscribeConversation(conversationID string, ch chan *models.Event) {
+	b.Unsubscribe("conv:"+conversationID, ch)
+}
+
+// SubscribeGlobal returns a channel that receives events for a global topic
+// (e.g. "agents"). Unlike Subscribe, the topic key is used directly — not
+// prefixed with a task ID. Call UnsubscribeGlobal when done.
+func (b *Broker) SubscribeGlobal(topic string) chan *models.Event {
+	return b.Subscribe(topic)
+}
+
+// UnsubscribeGlobal removes a channel from a global topic and closes it.
+func (b *Broker) UnsubscribeGlobal(topic string, ch chan *models.Event) {
+	b.Unsubscribe(topic, ch)
+}
+
+// PublishGlobal sends an event to all subscribers of a global topic.
+// Unlike Publish, it does not route to task or conversation subscribers.
+// If a subscriber's channel is full, the event is dropped.
+func (b *Broker) PublishGlobal(topic string, event *models.Event) {
+	b.mu.RLock()
+	subs := b.subscribers[topic]
 	b.mu.RUnlock()
 
 	for _, ch := range subs {
 		select {
 		case ch <- event:
 		default:
-			// Subscriber too slow, drop event (they can catch up from DB)
 		}
 	}
 }

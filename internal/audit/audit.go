@@ -14,7 +14,6 @@ type Logger struct {
 }
 
 type Entry struct {
-	OrgID        string
 	TaskID       string
 	SubtaskID    string
 	AgentID      string
@@ -41,13 +40,13 @@ func (l *Logger) Log(ctx context.Context, e Entry) error {
 	}
 
 	_, err = l.DB.Exec(ctx,
-		`INSERT INTO audit_logs (id, org_id, task_id, subtask_id, agent_id, actor_type, actor_id,
+		`INSERT INTO audit_logs (id, task_id, subtask_id, agent_id, actor_type, actor_id,
 		 action, resource_type, resource_id, details, model, input_tokens, output_tokens, cost_usd,
 		 endpoint_called, latency_ms, status_code)
-		 VALUES ($1, $2, NULLIF($3,''), NULLIF($4,''), NULLIF($5,''), $6, $7,
-		 $8, $9, NULLIF($10,''), $11, NULLIF($12,''), $13, $14, $15,
-		 NULLIF($16,''), NULLIF($17,0), NULLIF($18,0))`,
-		uuid.New().String(), e.OrgID, e.TaskID, e.SubtaskID, e.AgentID,
+		 VALUES ($1, NULLIF($2,''), NULLIF($3,''), NULLIF($4,''), $5, $6,
+		 $7, $8, NULLIF($9,''), $10, NULLIF($11,''), $12, $13, $14,
+		 NULLIF($15,''), NULLIF($16,0), NULLIF($17,0))`,
+		uuid.New().String(), e.TaskID, e.SubtaskID, e.AgentID,
 		e.ActorType, e.ActorID, e.Action, e.ResourceType, e.ResourceID,
 		detailsJSON, e.Model, e.InputTokens, e.OutputTokens, e.CostUSD,
 		e.Endpoint, e.LatencyMs, e.StatusCode)
@@ -66,14 +65,4 @@ func (l *Logger) GetTaskCost(ctx context.Context, taskID string) (float64, int, 
 		 FROM audit_logs WHERE task_id = $1`, taskID).
 		Scan(&totalCost, &totalInput, &totalOutput)
 	return totalCost, totalInput, totalOutput, err
-}
-
-// GetOrgMonthlySpend returns the current month's total spend for an organization.
-func (l *Logger) GetOrgMonthlySpend(ctx context.Context, orgID string) (float64, error) {
-	var spent float64
-	err := l.DB.QueryRow(ctx,
-		`SELECT COALESCE(SUM(cost_usd), 0) FROM audit_logs
-		 WHERE org_id = $1 AND created_at >= date_trunc('month', NOW())`,
-		orgID).Scan(&spent)
-	return spent, err
 }

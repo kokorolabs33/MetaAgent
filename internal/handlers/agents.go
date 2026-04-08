@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -10,42 +11,46 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"taskhub/internal/ctxutil"
+	"taskhub/internal/a2a"
 	"taskhub/internal/models"
 )
 
 // AgentHandler provides HTTP handlers for agent CRUD operations.
 type AgentHandler struct {
-	DB *pgxpool.Pool
+	DB         *pgxpool.Pool
+	Resolver   *a2a.Resolver
+	Aggregator *a2a.Aggregator // may be nil
 }
 
 // agentColumns is the SELECT column list for agents (order must match scanAgent).
-const agentColumns = `id, org_id, name, version, description, endpoint,
-	adapter_type, adapter_config, auth_type, auth_config,
-	capabilities, input_schema, output_schema, config,
-	status, created_at, updated_at`
+const agentColumns = `id, name, version, description, endpoint,
+	agent_card_url, agent_card, card_fetched_at,
+	capabilities, skills,
+	status, is_online, last_health_check, skill_hash,
+	created_at, updated_at`
 
 // scanAgent scans a row into an Agent, handling JSONB columns via []byte intermediaries.
 func scanAgent(scan func(dest ...any) error) (models.Agent, error) {
 	var a models.Agent
-	var adapterConfig, authConfig, inputSchema, outputSchema, agentConfig []byte
-	var capabilitiesJSON []byte
+	var agentCard, capabilitiesJSON, skillsJSON []byte
 
 	err := scan(
-		&a.ID, &a.OrgID, &a.Name, &a.Version, &a.Description, &a.Endpoint,
-		&a.AdapterType, &adapterConfig, &a.AuthType, &authConfig,
-		&capabilitiesJSON, &inputSchema, &outputSchema, &agentConfig,
-		&a.Status, &a.CreatedAt, &a.UpdatedAt,
+		&a.ID, &a.Name, &a.Version, &a.Description, &a.Endpoint,
+		&a.AgentCardURL, &agentCard, &a.CardFetchedAt,
+		&capabilitiesJSON, &skillsJSON,
+		&a.Status, &a.IsOnline, &a.LastHealthCheck, &a.SkillHash,
+		&a.CreatedAt, &a.UpdatedAt,
 	)
 	if err != nil {
 		return a, err
 	}
 
-	a.AdapterConfig = adapterConfig
-	a.AuthConfig = authConfig
-	a.InputSchema = inputSchema
-	a.OutputSchema = outputSchema
-	a.Config = agentConfig
+	if agentCard != nil {
+		a.AgentCard = json.RawMessage(agentCard)
+	}
+	if skillsJSON != nil {
+		a.Skills = json.RawMessage(skillsJSON)
+	}
 
 	if err := json.Unmarshal(capabilitiesJSON, &a.Capabilities); err != nil {
 		a.Capabilities = []string{}
@@ -54,15 +59,26 @@ func scanAgent(scan func(dest ...any) error) (models.Agent, error) {
 	return a, nil
 }
 
-// List returns all agents for the current organization.
+// List returns all agents for the current organization, optionally filtered by ?q=.
 func (h *AgentHandler) List(w http.ResponseWriter, r *http.Request) {
-	org := ctxutil.OrgFromCtx(r.Context())
+	search := r.URL.Query().Get("q")
 
-	rows, err := h.DB.Query(r.Context(),
-		`SELECT `+agentColumns+`
-		 FROM agents
-		 WHERE org_id = $1
-		 ORDER BY created_at DESC`, org.ID)
+	var query string
+	var args []any
+
+	if search != "" {
+		query = `SELECT ` + agentColumns + `
+			FROM agents
+			WHERE name ILIKE $1 OR description ILIKE $1
+			ORDER BY created_at DESC`
+		args = []any{"%" + search + "%"}
+	} else {
+		query = `SELECT ` + agentColumns + `
+			FROM agents
+			ORDER BY created_at DESC`
+	}
+
+	rows, err := h.DB.Query(r.Context(), query, args...)
 	if err != nil {
 		jsonError(w, "query failed", http.StatusInternalServerError)
 		return
@@ -88,21 +104,42 @@ func (h *AgentHandler) List(w http.ResponseWriter, r *http.Request) {
 
 // createAgentRequest is the expected body for POST /agents.
 type createAgentRequest struct {
-	Name          string          `json:"name"`
-	Version       string          `json:"version"`
-	Description   string          `json:"description"`
-	Endpoint      string          `json:"endpoint"`
-	AdapterType   string          `json:"adapter_type"`
-	AdapterConfig json.RawMessage `json:"adapter_config,omitempty"`
-	AuthType      string          `json:"auth_type"`
-	AuthConfig    json.RawMessage `json:"auth_config,omitempty"`
-	Capabilities  []string        `json:"capabilities"`
-	InputSchema   json.RawMessage `json:"input_schema,omitempty"`
-	OutputSchema  json.RawMessage `json:"output_schema,omitempty"`
-	Config        json.RawMessage `json:"config,omitempty"`
+	Name         string          `json:"name"`
+	Version      string          `json:"version"`
+	Description  string          `json:"description"`
+	Endpoint     string          `json:"endpoint"`
+	Capabilities json.RawMessage `json:"capabilities"`
+}
+
+// parseCapabilities handles capabilities as either []string or {key: bool} object.
+func parseCapabilities(raw json.RawMessage) []string {
+	if len(raw) == 0 {
+		return []string{}
+	}
+
+	// Try []string first
+	var arr []string
+	if err := json.Unmarshal(raw, &arr); err == nil {
+		return arr
+	}
+
+	// Try map[string]bool (AgentCard format)
+	var obj map[string]bool
+	if err := json.Unmarshal(raw, &obj); err == nil {
+		var result []string
+		for k, v := range obj {
+			if v {
+				result = append(result, k)
+			}
+		}
+		return result
+	}
+
+	return []string{}
 }
 
 // Create adds a new agent to the organization.
+// Only endpoint is required — all other fields auto-populated from AgentCard.
 func (h *AgentHandler) Create(w http.ResponseWriter, r *http.Request) {
 	var req createAgentRequest
 	if err := decodeJSON(w, r, &req); err != nil {
@@ -110,78 +147,114 @@ func (h *AgentHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	req.Name = strings.TrimSpace(req.Name)
 	req.Endpoint = strings.TrimSpace(req.Endpoint)
-
-	if req.Name == "" {
-		jsonError(w, "name is required", http.StatusBadRequest)
-		return
-	}
 	if req.Endpoint == "" {
 		jsonError(w, "endpoint is required", http.StatusBadRequest)
 		return
 	}
-	if req.AdapterType != "http_poll" && req.AdapterType != "native" {
-		jsonError(w, "adapter_type must be http_poll or native", http.StatusBadRequest)
+
+	now := time.Now().UTC()
+
+	// Discover agent card from endpoint (auto-populate name, description, etc.)
+	var agentCardURL string
+	var agentCard json.RawMessage
+	var skills json.RawMessage
+	var cardFetchedAt *time.Time
+
+	discovered, err := h.Resolver.Discover(r.Context(), req.Endpoint)
+	if err == nil {
+		agentCardURL = strings.TrimRight(req.Endpoint, "/") + "/.well-known/agent-card.json"
+		agentCard = discovered.RawCard
+		fetchTime := now
+		cardFetchedAt = &fetchTime
+
+		skillsJSON, _ := json.Marshal(discovered.Skills)
+		skills = json.RawMessage(skillsJSON)
+
+		// Use card values as defaults if not provided in request
+		if strings.TrimSpace(req.Name) == "" && discovered.Name != "" {
+			req.Name = discovered.Name
+		}
+		if req.Description == "" && discovered.Description != "" {
+			req.Description = discovered.Description
+		}
+		if req.Version == "" && discovered.Version != "" {
+			req.Version = discovered.Version
+		}
+		// Build capabilities list from card's boolean flags if not provided
+		if len(req.Capabilities) == 0 {
+			var discoveredCaps []string
+			if discovered.Capabilities.Streaming {
+				discoveredCaps = append(discoveredCaps, "streaming")
+			}
+			if discovered.Capabilities.PushNotifications {
+				discoveredCaps = append(discoveredCaps, "pushNotifications")
+			}
+			if discovered.Capabilities.StateTransitionHistory {
+				discoveredCaps = append(discoveredCaps, "stateTransitionHistory")
+			}
+			if len(discoveredCaps) > 0 {
+				req.Capabilities, _ = json.Marshal(discoveredCaps)
+			}
+		}
+	}
+
+	req.Name = strings.TrimSpace(req.Name)
+	if req.Name == "" {
+		jsonError(w, "name is required (and could not be discovered from AgentCard)", http.StatusBadRequest)
 		return
 	}
 
-	org := ctxutil.OrgFromCtx(r.Context())
-	now := time.Now().UTC()
+	if skills == nil {
+		skills = json.RawMessage("[]")
+	}
+	if agentCard == nil {
+		agentCard = json.RawMessage("{}")
+	}
 
 	// Marshal capabilities to JSON for DB storage.
-	caps := req.Capabilities
-	if caps == nil {
-		caps = []string{}
-	}
+	caps := parseCapabilities(req.Capabilities)
 	capsJSON, err := json.Marshal(caps)
 	if err != nil {
 		jsonError(w, "invalid capabilities", http.StatusBadRequest)
 		return
 	}
 
-	// Default JSONB fields to empty objects.
-	adapterConfig := defaultJSON(req.AdapterConfig, "{}")
-	authConfig := defaultJSON(req.AuthConfig, "{}")
-	inputSchema := defaultJSON(req.InputSchema, "{}")
-	outputSchema := defaultJSON(req.OutputSchema, "{}")
-	config := defaultJSON(req.Config, "{}")
-
 	version := req.Version
 	if version == "" {
 		version = "1.0.0"
 	}
 
+	// If discovery succeeded, agent is online
+	isOnline := cardFetchedAt != nil
+
 	agent := models.Agent{
 		ID:            uuid.New().String(),
-		OrgID:         org.ID,
 		Name:          req.Name,
 		Version:       version,
 		Description:   req.Description,
 		Endpoint:      req.Endpoint,
-		AdapterType:   req.AdapterType,
-		AdapterConfig: adapterConfig,
-		AuthType:      req.AuthType,
-		AuthConfig:    authConfig,
+		AgentCardURL:  agentCardURL,
+		AgentCard:     agentCard,
+		CardFetchedAt: cardFetchedAt,
 		Capabilities:  caps,
-		InputSchema:   inputSchema,
-		OutputSchema:  outputSchema,
-		Config:        config,
+		Skills:        skills,
 		Status:        "active",
+		IsOnline:      isOnline,
 		CreatedAt:     now,
 		UpdatedAt:     now,
 	}
 
 	_, err = h.DB.Exec(r.Context(),
-		`INSERT INTO agents (id, org_id, name, version, description, endpoint,
-			adapter_type, adapter_config, auth_type, auth_config,
-			capabilities, input_schema, output_schema, config,
-			status, created_at, updated_at)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
-		agent.ID, agent.OrgID, agent.Name, agent.Version, agent.Description, agent.Endpoint,
-		agent.AdapterType, adapterConfig, agent.AuthType, authConfig,
-		capsJSON, inputSchema, outputSchema, config,
-		agent.Status, agent.CreatedAt, agent.UpdatedAt)
+		`INSERT INTO agents (id, name, version, description, endpoint,
+			agent_card_url, agent_card, card_fetched_at,
+			capabilities, skills,
+			status, is_online, last_health_check, created_at, updated_at)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
+		agent.ID, agent.Name, agent.Version, agent.Description, agent.Endpoint,
+		agent.AgentCardURL, agentCard, cardFetchedAt,
+		capsJSON, skills,
+		agent.Status, isOnline, cardFetchedAt, agent.CreatedAt, agent.UpdatedAt)
 	if err != nil {
 		if strings.Contains(err.Error(), "duplicate") || strings.Contains(err.Error(), "unique") {
 			jsonError(w, "agent name already exists in this organization", http.StatusConflict)
@@ -191,19 +264,22 @@ func (h *AgentHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if h.Aggregator != nil {
+		h.Aggregator.Invalidate()
+	}
+
 	jsonCreated(w, agent)
 }
 
 // Get returns a single agent by ID within the current organization.
 func (h *AgentHandler) Get(w http.ResponseWriter, r *http.Request) {
-	org := ctxutil.OrgFromCtx(r.Context())
 	id := chi.URLParam(r, "id")
 
 	agent, err := scanAgent(
 		h.DB.QueryRow(r.Context(),
 			`SELECT `+agentColumns+`
 			 FROM agents
-			 WHERE id = $1 AND org_id = $2`, id, org.ID).Scan,
+			 WHERE id = $1`, id).Scan,
 	)
 	if err != nil {
 		jsonError(w, "agent not found", http.StatusNotFound)
@@ -215,24 +291,16 @@ func (h *AgentHandler) Get(w http.ResponseWriter, r *http.Request) {
 
 // updateAgentRequest holds optional fields for PUT /agents/{id}.
 type updateAgentRequest struct {
-	Name          *string          `json:"name"`
-	Version       *string          `json:"version"`
-	Description   *string          `json:"description"`
-	Endpoint      *string          `json:"endpoint"`
-	AdapterType   *string          `json:"adapter_type"`
-	AdapterConfig *json.RawMessage `json:"adapter_config"`
-	AuthType      *string          `json:"auth_type"`
-	AuthConfig    *json.RawMessage `json:"auth_config"`
-	Capabilities  *[]string        `json:"capabilities"`
-	InputSchema   *json.RawMessage `json:"input_schema"`
-	OutputSchema  *json.RawMessage `json:"output_schema"`
-	Config        *json.RawMessage `json:"config"`
-	Status        *string          `json:"status"`
+	Name         *string   `json:"name"`
+	Version      *string   `json:"version"`
+	Description  *string   `json:"description"`
+	Endpoint     *string   `json:"endpoint"`
+	Capabilities *[]string `json:"capabilities"`
+	Status       *string   `json:"status"`
 }
 
 // Update modifies an existing agent's fields (partial update).
 func (h *AgentHandler) Update(w http.ResponseWriter, r *http.Request) {
-	org := ctxutil.OrgFromCtx(r.Context())
 	id := chi.URLParam(r, "id")
 
 	// Read current agent from DB first.
@@ -240,7 +308,7 @@ func (h *AgentHandler) Update(w http.ResponseWriter, r *http.Request) {
 		h.DB.QueryRow(r.Context(),
 			`SELECT `+agentColumns+`
 			 FROM agents
-			 WHERE id = $1 AND org_id = $2`, id, org.ID).Scan,
+			 WHERE id = $1`, id).Scan,
 	)
 	if err != nil {
 		jsonError(w, "agent not found", http.StatusNotFound)
@@ -252,6 +320,9 @@ func (h *AgentHandler) Update(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
+
+	// Track whether endpoint is changing for agent card refresh.
+	oldEndpoint := agent.Endpoint
 
 	// Apply changes.
 	if req.Name != nil {
@@ -276,33 +347,8 @@ func (h *AgentHandler) Update(w http.ResponseWriter, r *http.Request) {
 		}
 		agent.Endpoint = endpoint
 	}
-	if req.AdapterType != nil {
-		if *req.AdapterType != "http_poll" && *req.AdapterType != "native" {
-			jsonError(w, "adapter_type must be http_poll or native", http.StatusBadRequest)
-			return
-		}
-		agent.AdapterType = *req.AdapterType
-	}
-	if req.AdapterConfig != nil {
-		agent.AdapterConfig = *req.AdapterConfig
-	}
-	if req.AuthType != nil {
-		agent.AuthType = *req.AuthType
-	}
-	if req.AuthConfig != nil {
-		agent.AuthConfig = *req.AuthConfig
-	}
 	if req.Capabilities != nil {
 		agent.Capabilities = *req.Capabilities
-	}
-	if req.InputSchema != nil {
-		agent.InputSchema = *req.InputSchema
-	}
-	if req.OutputSchema != nil {
-		agent.OutputSchema = *req.OutputSchema
-	}
-	if req.Config != nil {
-		agent.Config = *req.Config
 	}
 	if req.Status != nil {
 		agent.Status = *req.Status
@@ -315,17 +361,57 @@ func (h *AgentHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, err = h.DB.Exec(r.Context(),
-		`UPDATE agents SET
-			name = $1, version = $2, description = $3, endpoint = $4,
-			adapter_type = $5, adapter_config = $6, auth_type = $7, auth_config = $8,
-			capabilities = $9, input_schema = $10, output_schema = $11, config = $12,
-			status = $13, updated_at = NOW()
-		 WHERE id = $14 AND org_id = $15`,
-		agent.Name, agent.Version, agent.Description, agent.Endpoint,
-		agent.AdapterType, agent.AdapterConfig, agent.AuthType, agent.AuthConfig,
-		capsJSON, agent.InputSchema, agent.OutputSchema, agent.Config,
-		agent.Status, id, org.ID)
+	// If endpoint changed, re-discover the agent card.
+	endpointChanged := agent.Endpoint != oldEndpoint
+	agentCard := agent.AgentCard
+	agentCardURL := agent.AgentCardURL
+	skills := agent.Skills
+	var cardFetchedAt *time.Time
+
+	if endpointChanged {
+		discovered, discoverErr := h.Resolver.Discover(r.Context(), agent.Endpoint)
+		if discoverErr != nil {
+			log.Printf("agents: re-discover agent card for %s after endpoint change: %v", id, discoverErr)
+			// Still allow the update; just clear stale card data.
+			agentCard = json.RawMessage("{}")
+			agentCardURL = ""
+			skills = json.RawMessage("[]")
+			cardFetchedAt = nil
+		} else {
+			agentCard = discovered.RawCard
+			agentCardURL = strings.TrimRight(agent.Endpoint, "/") + "/.well-known/agent-card.json"
+			fetchTime := time.Now().UTC()
+			cardFetchedAt = &fetchTime
+			skillsJSON, _ := json.Marshal(discovered.Skills)
+			skills = json.RawMessage(skillsJSON)
+		}
+		agent.AgentCard = agentCard
+		agent.AgentCardURL = agentCardURL
+		agent.Skills = skills
+		agent.CardFetchedAt = cardFetchedAt
+	}
+
+	if endpointChanged {
+		_, err = h.DB.Exec(r.Context(),
+			`UPDATE agents SET
+				name = $1, version = $2, description = $3, endpoint = $4,
+				capabilities = $5, status = $6,
+				agent_card_url = $7, agent_card = $8, card_fetched_at = $9, skills = $10,
+				updated_at = NOW()
+			 WHERE id = $11`,
+			agent.Name, agent.Version, agent.Description, agent.Endpoint,
+			capsJSON, agent.Status,
+			agentCardURL, agentCard, cardFetchedAt, skills,
+			id)
+	} else {
+		_, err = h.DB.Exec(r.Context(),
+			`UPDATE agents SET
+				name = $1, version = $2, description = $3, endpoint = $4,
+				capabilities = $5, status = $6, updated_at = NOW()
+			 WHERE id = $7`,
+			agent.Name, agent.Version, agent.Description, agent.Endpoint,
+			capsJSON, agent.Status, id)
+	}
 	if err != nil {
 		if strings.Contains(err.Error(), "duplicate") || strings.Contains(err.Error(), "unique") {
 			jsonError(w, "agent name already exists in this organization", http.StatusConflict)
@@ -333,6 +419,10 @@ func (h *AgentHandler) Update(w http.ResponseWriter, r *http.Request) {
 		}
 		jsonError(w, "could not update agent", http.StatusInternalServerError)
 		return
+	}
+
+	if h.Aggregator != nil {
+		h.Aggregator.Invalidate()
 	}
 
 	// Re-read updated_at from DB.
@@ -344,11 +434,10 @@ func (h *AgentHandler) Update(w http.ResponseWriter, r *http.Request) {
 
 // Delete removes an agent from the organization.
 func (h *AgentHandler) Delete(w http.ResponseWriter, r *http.Request) {
-	org := ctxutil.OrgFromCtx(r.Context())
 	id := chi.URLParam(r, "id")
 
 	tag, err := h.DB.Exec(r.Context(),
-		`DELETE FROM agents WHERE id = $1 AND org_id = $2`, id, org.ID)
+		`DELETE FROM agents WHERE id = $1`, id)
 	if err != nil {
 		jsonError(w, "could not delete agent", http.StatusInternalServerError)
 		return
@@ -356,6 +445,10 @@ func (h *AgentHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	if tag.RowsAffected() == 0 {
 		jsonError(w, "agent not found", http.StatusNotFound)
 		return
+	}
+
+	if h.Aggregator != nil {
+		h.Aggregator.Invalidate()
 	}
 
 	w.WriteHeader(http.StatusNoContent)
@@ -367,39 +460,34 @@ type healthcheckResponse struct {
 	LatencyMs int64 `json:"latency_ms"`
 }
 
-// Healthcheck probes an agent's health endpoint.
+// Healthcheck probes an agent's health by fetching its AgentCard.
 func (h *AgentHandler) Healthcheck(w http.ResponseWriter, r *http.Request) {
-	org := ctxutil.OrgFromCtx(r.Context())
 	id := chi.URLParam(r, "id")
 
 	agent, err := scanAgent(
 		h.DB.QueryRow(r.Context(),
 			`SELECT `+agentColumns+`
 			 FROM agents
-			 WHERE id = $1 AND org_id = $2`, id, org.ID).Scan,
+			 WHERE id = $1`, id).Scan,
 	)
 	if err != nil {
 		jsonError(w, "agent not found", http.StatusNotFound)
 		return
 	}
 
-	healthURL := strings.TrimRight(agent.Endpoint, "/") + "/health"
-
-	client := &http.Client{Timeout: 5 * time.Second}
 	start := time.Now()
-	resp, err := client.Get(healthURL)
+	_, discoverErr := h.Resolver.Discover(r.Context(), agent.Endpoint)
 	latency := time.Since(start).Milliseconds()
 
-	if err != nil {
+	if discoverErr != nil {
 		jsonOK(w, healthcheckResponse{Status: 0, LatencyMs: latency})
 		return
 	}
-	defer resp.Body.Close()
 
-	jsonOK(w, healthcheckResponse{Status: resp.StatusCode, LatencyMs: latency})
+	jsonOK(w, healthcheckResponse{Status: 200, LatencyMs: latency})
 }
 
-// TestEndpoint tests connectivity to an arbitrary endpoint (no saved agent required).
+// TestEndpoint tests connectivity to an arbitrary endpoint by trying AgentCard discovery.
 // Used by the register form to validate before saving.
 func (h *AgentHandler) TestEndpoint(w http.ResponseWriter, r *http.Request) {
 	var req struct {
@@ -415,19 +503,41 @@ func (h *AgentHandler) TestEndpoint(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	healthURL := strings.TrimRight(endpoint, "/") + "/health"
-	client := &http.Client{Timeout: 5 * time.Second}
 	start := time.Now()
-	resp, err := client.Get(healthURL)
+	_, discoverErr := h.Resolver.Discover(r.Context(), endpoint)
 	latency := time.Since(start).Milliseconds()
 
-	if err != nil {
+	if discoverErr != nil {
 		jsonOK(w, healthcheckResponse{Status: 0, LatencyMs: latency})
 		return
 	}
-	defer resp.Body.Close()
 
-	jsonOK(w, healthcheckResponse{Status: resp.StatusCode, LatencyMs: latency})
+	jsonOK(w, healthcheckResponse{Status: 200, LatencyMs: latency})
+}
+
+// Discover handles POST /agents/discover.
+// Fetches the AgentCard from the given URL and returns the discovered agent info.
+func (h *AgentHandler) Discover(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		URL string `json:"url"`
+	}
+	if err := decodeJSON(w, r, &req); err != nil {
+		jsonError(w, "invalid body", http.StatusBadRequest)
+		return
+	}
+	url := strings.TrimSpace(req.URL)
+	if url == "" {
+		jsonError(w, "url is required", http.StatusBadRequest)
+		return
+	}
+
+	discovered, err := h.Resolver.Discover(r.Context(), url)
+	if err != nil {
+		jsonError(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+
+	jsonOK(w, discovered)
 }
 
 // defaultJSON returns raw if it is non-nil and non-empty, otherwise returns the fallback as RawMessage.

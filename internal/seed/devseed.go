@@ -13,12 +13,9 @@ const (
 	LocalUserID    = "local-user"
 	LocalUserEmail = "local@taskhub.local"
 	LocalUserName  = "Local User"
-	LocalOrgID     = "local-org"
-	LocalOrgName   = "My Workspace"
-	LocalOrgSlug   = "local"
 )
 
-// LocalSeed creates the default user + org for local mode.
+// LocalSeed creates the default user for local mode.
 // No session needed — auth middleware is bypassed in local mode.
 // Safe to call multiple times (idempotent).
 func LocalSeed(ctx context.Context, pool *pgxpool.Pool) error {
@@ -32,24 +29,12 @@ func LocalSeed(ctx context.Context, pool *pgxpool.Pool) error {
 		return fmt.Errorf("seed user: %w", err)
 	}
 
-	// Upsert org
-	_, err = pool.Exec(ctx,
-		`INSERT INTO organizations (id, name, slug)
-		 VALUES ($1, $2, $3)
-		 ON CONFLICT (id) DO NOTHING`,
-		LocalOrgID, LocalOrgName, LocalOrgSlug)
-	if err != nil {
-		return fmt.Errorf("seed org: %w", err)
+	if err := SeedTemplates(ctx, pool); err != nil {
+		return fmt.Errorf("seed templates: %w", err)
 	}
 
-	// Upsert membership (owner)
-	_, err = pool.Exec(ctx,
-		`INSERT INTO org_members (org_id, user_id, role)
-		 VALUES ($1, $2, 'owner')
-		 ON CONFLICT (org_id, user_id) DO NOTHING`,
-		LocalOrgID, LocalUserID)
-	if err != nil {
-		return fmt.Errorf("seed membership: %w", err)
+	if err := SeedPolicies(ctx, pool); err != nil {
+		return fmt.Errorf("seed policies: %w", err)
 	}
 
 	return nil

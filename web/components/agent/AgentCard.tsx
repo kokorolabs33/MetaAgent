@@ -3,6 +3,8 @@
 import { useRouter } from "next/navigation";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { AgentStatusDot } from "@/components/agent/AgentStatusDot";
+import { useAgentStore } from "@/lib/store";
 import type { Agent } from "@/lib/types";
 
 const statusConfig: Record<
@@ -23,11 +25,6 @@ const statusConfig: Record<
   },
 };
 
-const adapterConfig: Record<Agent["adapter_type"], string> = {
-  http_poll: "HTTP Poll",
-  native: "Native",
-};
-
 interface AgentCardProps {
   agent: Agent;
 }
@@ -35,19 +32,23 @@ interface AgentCardProps {
 export function AgentCard({ agent }: AgentCardProps) {
   const router = useRouter();
   const status = statusConfig[agent.status];
+  const agentStatus = useAgentStore((s) => s.agentStatuses[agent.id] ?? "unknown");
 
   return (
     <Card
       className="cursor-pointer transition-colors hover:bg-card/80"
-      onClick={() => router.push(`/agents/${agent.id}`)}
+      onClick={() => router.push(`/manage/agents/${agent.id}`)}
     >
       <CardHeader>
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
+            <AgentStatusDot status={agentStatus} size="md" />
             <CardTitle className="truncate">{agent.name}</CardTitle>
-            <Badge variant="outline" className="text-xs">
-              {adapterConfig[agent.adapter_type]}
-            </Badge>
+            {agent.version && (
+              <Badge variant="outline" className="text-xs">
+                v{agent.version}
+              </Badge>
+            )}
           </div>
           <Badge className={status.className}>{status.label}</Badge>
         </div>
@@ -61,7 +62,7 @@ export function AgentCard({ agent }: AgentCardProps) {
           )}
           <div className="flex items-center justify-between gap-2">
             <div className="flex flex-wrap gap-1">
-              {agent.capabilities.slice(0, 4).map((cap) => (
+              {(agent.capabilities ?? []).slice(0, 4).map((cap) => (
                 <span
                   key={cap}
                   className="rounded-md bg-secondary/60 px-1.5 py-0.5 text-[10px] text-muted-foreground"
@@ -69,9 +70,9 @@ export function AgentCard({ agent }: AgentCardProps) {
                   {cap}
                 </span>
               ))}
-              {agent.capabilities.length > 4 && (
+              {(agent.capabilities ?? []).length > 4 && (
                 <span className="rounded-md bg-secondary/60 px-1.5 py-0.5 text-[10px] text-muted-foreground">
-                  +{agent.capabilities.length - 4}
+                  +{(agent.capabilities ?? []).length - 4}
                 </span>
               )}
             </div>

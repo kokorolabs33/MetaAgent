@@ -11,10 +11,13 @@ import {
   Lock,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { AgentStatusDot } from "@/components/agent/AgentStatusDot";
+import { useAgentStore } from "@/lib/store";
 
 interface SubtaskNodeData {
   label: string;
   agentName: string;
+  agentId: string;
   instruction: string;
   status: string;
   [key: string]: unknown;
@@ -48,7 +51,7 @@ const statusConfig: Record<
     icon: XCircle,
     iconClass: "text-red-400",
   },
-  waiting_for_input: {
+  input_required: {
     bg: "bg-amber-950/80",
     border: "border-amber-500",
     icon: AlertCircle,
@@ -72,6 +75,9 @@ function SubtaskNodeComponent({ data }: NodeProps) {
   const nodeData = data as SubtaskNodeData;
   const config = statusConfig[nodeData.status] ?? statusConfig.pending;
   const Icon = config.icon;
+  const agentStatus = useAgentStore((s) =>
+    s.agentStatuses[nodeData.agentId] ?? "unknown"
+  );
 
   const truncated =
     nodeData.instruction.length > 60
@@ -86,11 +92,12 @@ function SubtaskNodeComponent({ data }: NodeProps) {
           "rounded-lg border px-4 py-3 shadow-md min-w-[200px] max-w-[260px]",
           config.bg,
           config.border,
-          nodeData.status === "waiting_for_input" && "ring-2 ring-amber-500/30",
+          nodeData.status === "input_required" && "ring-2 ring-amber-500/30",
         )}
       >
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1.5">
           <Icon className={cn("size-4 shrink-0", config.iconClass)} />
+          <AgentStatusDot status={agentStatus} />
           <span className="truncate text-sm font-bold text-foreground">
             {nodeData.agentName}
           </span>

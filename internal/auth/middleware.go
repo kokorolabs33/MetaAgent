@@ -29,6 +29,7 @@ func (m *Middleware) RequireAuth(next http.Handler) http.Handler {
 		// Local mode: skip auth, inject local user
 		if m.LocalMode {
 			ctx := ctxutil.SetUser(r.Context(), localUser)
+			ctx = ctxutil.SetRole(ctx, "admin")
 			next.ServeHTTP(w, r.WithContext(ctx))
 			return
 		}
@@ -47,6 +48,7 @@ func (m *Middleware) RequireAuth(next http.Handler) http.Handler {
 		}
 
 		ctx := ctxutil.SetUser(r.Context(), user)
+		ctx = ctxutil.SetRole(ctx, "admin")
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }

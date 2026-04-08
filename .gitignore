@@ -9,6 +9,9 @@ Thumbs.db
 
 # === Backend (Go) ===
 /server
+/llmagent
+/mockagent
+/openaiagent
 *.exe
 tmp/
 
@@ -33,3 +36,11 @@ npm-debug.log*
 coverage/
 *.cover
 *.out
+
+# === Worktrees ===
+.worktrees/
+.pnpm-store/
+.claude/
+.superpowers/
+CLAUDE.md
+.gstack/

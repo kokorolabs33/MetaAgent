@@ -1,171 +1,196 @@
 "use client";
 
 import { create } from "zustand";
-import { api } from "./api";
+import { api, isSendMessageResponse } from "./api";
 import type {
-  Organization,
-  OrgListItem,
   Agent,
   Task,
   TaskWithSubtasks,
   SubTask,
   Message,
   TaskEvent,
+  ToolCallEvent,
+  StreamingMessage,
 } from "./types";
-import { connectSSE } from "./sse";
-
-// ─── Org Store ──────────────────────────────────────────────
-interface OrgStore {
-  orgs: OrgListItem[];
-  currentOrg: Organization | null;
-  isLoading: boolean;
-  loadOrgs: () => Promise<void>;
-  selectOrg: (orgId: string) => Promise<void>;
-}
-
-export const useOrgStore = create<OrgStore>((set) => ({
-  orgs: [],
-  currentOrg: null,
-  isLoading: false,
-
-  loadOrgs: async () => {
-    set({ isLoading: true });
-    try {
-      const orgs = await api.orgs.list();
-      set({ orgs, isLoading: false });
-    } catch {
-      set({ isLoading: false });
-    }
-  },
-
-  selectOrg: async (orgId) => {
-    set({ isLoading: true });
-    try {
-      const org = await api.orgs.get(orgId);
-      set({ currentOrg: org, isLoading: false });
-    } catch {
-      set({ isLoading: false });
-    }
-  },
-}));
+import { connectSSE, connectAgentStatusSSE, connectMultiTaskSSE } from "./sse";
+import type { AgentActivityStatus } from "./types";
 
 // ─── Agent Store ────────────────────────────────────────────
 interface AgentStore {
   agents: Agent[];
   isLoading: boolean;
-  loadAgents: (orgId: string) => Promise<void>;
-  registerAgent: (orgId: string, data: Partial<Agent>) => Promise<Agent>;
-  deleteAgent: (orgId: string, id: string) => Promise<void>;
+  agentStatuses: Record<string, AgentActivityStatus>;
+  statusSSEDisconnect: (() => void) | null;
+  loadAgents: (q?: string) => Promise<void>;
+  registerAgent: (data: Partial<Agent>) => Promise<Agent>;
+  deleteAgent: (id: string) => Promise<void>;
+  connectStatusSSE: () => void;
+  disconnectStatusSSE: () => void;
+  getAgentStatus: (agentId: string) => AgentActivityStatus;
 }
 
-export const useAgentStore = create<AgentStore>((set) => ({
+export const useAgentStore = create<AgentStore>((set, get) => ({
   agents: [],
   isLoading: false,
+  agentStatuses: {},
+  statusSSEDisconnect: null,
 
-  loadAgents: async (orgId) => {
+  loadAgents: async (q?: string) => {
     set({ isLoading: true });
     try {
-      const agents = await api.agents.list(orgId);
+      const agents = await api.agents.list(q);
       set({ agents, isLoading: false });
     } catch {
       set({ isLoading: false });
     }
   },
 
-  registerAgent: async (orgId, data) => {
-    const agent = await api.agents.create(orgId, data);
+  registerAgent: async (data) => {
+    const agent = await api.agents.create(data);
     set((s) => ({ agents: [...s.agents, agent] }));
     return agent;
   },
 
-  deleteAgent: async (orgId, id) => {
-    await api.agents.delete(orgId, id);
+  deleteAgent: async (id) => {
+    await api.agents.delete(id);
     set((s) => ({ agents: s.agents.filter((a) => a.id !== id) }));
+  },
+
+  connectStatusSSE: () => {
+    // Prevent duplicate connections
+    get().disconnectStatusSSE();
+
+    const disconnect = connectAgentStatusSSE((event) => {
+      if (event.type === "agent.status_changed") {
+        const data = event.data;
+        const agentId = data.agent_id as string;
+        const activityStatus = data.activity_status as AgentActivityStatus;
+        if (agentId && activityStatus) {
+          set((s) => ({
+            agentStatuses: { ...s.agentStatuses, [agentId]: activityStatus },
+          }));
+        }
+      }
+    });
+    set({ statusSSEDisconnect: disconnect });
+  },
+
+  disconnectStatusSSE: () => {
+    const disconnect = get().statusSSEDisconnect;
+    if (disconnect) {
+      disconnect();
+      set({ statusSSEDisconnect: null });
+    }
+  },
+
+  getAgentStatus: (agentId: string): AgentActivityStatus => {
+    return get().agentStatuses[agentId] ?? "unknown";
   },
 }));
 
 // ─── Task Store ─────────────────────────────────────────────
 interface TaskStore {
   tasks: Task[];
+  totalTasks: number;
+  currentPage: number;
+  totalPages: number;
   currentTask: TaskWithSubtasks | null;
   messages: Message[];
+  typingAgents: Record<string, string>; // agent_id -> agent_name
+  streamingMessages: Record<string, StreamingMessage>; // agent_id -> streaming buffer
+  toolCallEvents: ToolCallEvent[];
   isLoading: boolean;
   sseDisconnect: (() => void) | null;
 
-  loadTasks: (orgId: string, status?: string) => Promise<void>;
-  createTask: (
-    orgId: string,
-    title: string,
-    description: string,
-  ) => Promise<Task>;
-  selectTask: (orgId: string, taskId: string) => Promise<void>;
-  cancelTask: (orgId: string, taskId: string) => Promise<void>;
-  sendMessage: (
-    orgId: string,
-    taskId: string,
-    content: string,
-  ) => Promise<void>;
-  connectSSE: (orgId: string, taskId: string) => void;
+  loadTasks: (params?: { status?: string; q?: string; page?: number }) => Promise<void>;
+  createTask: (title: string, description: string, templateId?: string) => Promise<Task>;
+  selectTask: (taskId: string) => Promise<void>;
+  cancelTask: (taskId: string) => Promise<void>;
+  sendMessage: (taskId: string, content: string) => Promise<string[] | undefined>;
+  connectSSE: (taskId: string) => void;
   disconnectSSE: () => void;
   handleEvent: (event: TaskEvent) => void;
 }
 
 export const useTaskStore = create<TaskStore>((set, get) => ({
   tasks: [],
+  totalTasks: 0,
+  currentPage: 1,
+  totalPages: 0,
   currentTask: null,
   messages: [],
+  typingAgents: {},
+  streamingMessages: {},
+  toolCallEvents: [],
   isLoading: false,
   sseDisconnect: null,
 
-  loadTasks: async (orgId, status) => {
+  loadTasks: async (params) => {
     set({ isLoading: true });
     try {
-      const tasks = await api.tasks.list(orgId, status);
-      set({ tasks, isLoading: false });
+      const result = await api.tasks.list(params);
+      set({
+        tasks: result.items,
+        totalTasks: result.total,
+        currentPage: result.page,
+        totalPages: result.pages,
+        isLoading: false,
+      });
     } catch {
       set({ isLoading: false });
     }
   },
 
-  createTask: async (orgId, title, description) => {
-    const task = await api.tasks.create(orgId, { title, description });
+  createTask: async (title, description, templateId?) => {
+    const data: { title: string; description: string; template_id?: string } = { title, description };
+    if (templateId) data.template_id = templateId;
+    const task = await api.tasks.create(data);
     set((s) => ({ tasks: [task, ...s.tasks] }));
     return task;
   },
 
-  selectTask: async (orgId, taskId) => {
+  selectTask: async (taskId) => {
     set({ isLoading: true });
     try {
       const [task, messages] = await Promise.all([
-        api.tasks.get(orgId, taskId),
-        api.messages.list(orgId, taskId),
+        api.tasks.get(taskId),
+        api.messages.list(taskId),
       ]);
-      set({ currentTask: task, messages, isLoading: false });
+      set({ currentTask: task, messages, toolCallEvents: [], isLoading: false });
     } catch {
       set({ isLoading: false });
     }
   },
 
-  cancelTask: async (orgId, taskId) => {
-    await api.tasks.cancel(orgId, taskId);
+  cancelTask: async (taskId) => {
+    await api.tasks.cancel(taskId);
     const task = get().currentTask;
     if (task && task.id === taskId) {
       set({ currentTask: { ...task, status: "cancelled" } });
     }
   },
 
-  sendMessage: async (orgId, taskId, content) => {
-    const msg = await api.messages.send(orgId, taskId, content);
+  sendMessage: async (taskId, content) => {
+    const result = await api.messages.send(taskId, content);
+    // Handle response using type guard -- no unsafe casts needed
+    const msg = isSendMessageResponse(result) ? result.message : result;
+    const advisoryErrors = isSendMessageResponse(result) ? result.advisory_errors : undefined;
+
     // Optimistically add — SSE dedup will skip if it arrives again
     set((s) => {
       if (s.messages.some((m) => m.id === msg.id)) return s;
       return { messages: [...s.messages, msg] };
     });
+
+    // Return errors for caller to display (D-02)
+    if (advisoryErrors && advisoryErrors.length > 0) {
+      return advisoryErrors;
+    }
   },
 
-  connectSSE: (orgId, taskId) => {
+  connectSSE: (taskId) => {
     get().disconnectSSE();
-    const disconnect = connectSSE(orgId, taskId, (event) => {
+    const disconnect = connectSSE(taskId, (event) => {
       get().handleEvent(event as unknown as TaskEvent);
     });
     set({ sseDisconnect: disconnect });
@@ -191,39 +216,154 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
         "task.completed": "completed",
         "task.failed": "failed",
         "task.cancelled": "cancelled",
+        "task.approval_required": "approval_required",
       };
       const newStatus = statusMap[event.type];
       if (newStatus) {
         set({ currentTask: { ...currentTask, status: newStatus } });
       }
+
+      // Handle replanning — reload full task to get new subtasks (per D-09)
+      if (event.type === "task.replanned") {
+        void get().selectTask(currentTask.id);
+        return;
+      }
     }
 
-    // Update subtask status from subtask lifecycle events
+    // Handle subtask lifecycle events
     if (event.type.startsWith("subtask.")) {
       const subtaskId = event.subtask_id;
       if (subtaskId) {
+        // Handle subtask creation — add new subtask to the list
+        if (event.type === "subtask.created") {
+          const data = event.data as Record<string, unknown>;
+          const subtasks = currentTask.subtasks ?? [];
+          const exists = subtasks.some((st) => st.id === subtaskId);
+          if (!exists) {
+            const newSubtask: SubTask = {
+              id: subtaskId,
+              task_id: currentTask.id,
+              agent_id: (data.agent_id as string) ?? "",
+              instruction: (data.instruction as string) ?? "",
+              depends_on: (data.depends_on as string[]) ?? [],
+              status: "pending",
+              attempt: 0,
+              max_attempts: 3,
+              created_at: event.created_at,
+            };
+            set({
+              currentTask: {
+                ...currentTask,
+                subtasks: [...subtasks, newSubtask],
+              },
+            });
+          }
+          return;
+        }
+
+        // Handle subtask status updates
         const statusMap: Record<string, SubTask["status"]> = {
           "subtask.running": "running",
           "subtask.completed": "completed",
           "subtask.failed": "failed",
-          "subtask.waiting_for_input": "waiting_for_input",
+          "subtask.input_required": "input_required",
           "subtask.blocked": "blocked",
           "subtask.cancelled": "cancelled",
         };
         const newStatus = statusMap[event.type];
         if (newStatus) {
+          const updatedSubtasks = (currentTask.subtasks ?? []).map((st) =>
+            st.id === subtaskId
+              ? { ...st, status: newStatus }
+              : st,
+          );
           set({
             currentTask: {
               ...currentTask,
-              subtasks: currentTask.subtasks.map((st) =>
-                st.id === subtaskId
-                  ? { ...st, status: newStatus }
-                  : st,
-              ),
+              subtasks: updatedSubtasks,
             },
           });
         }
       }
+    }
+
+    // Handle tool call events (D-07: real-time tool visibility)
+    if (event.type === "tool.call_started") {
+      const data = event.data as Record<string, unknown>;
+      const toolEvent: ToolCallEvent = {
+        id: event.id || crypto.randomUUID(),
+        subtask_id: event.subtask_id || "",
+        agent_id: event.actor_id || "",
+        tool_name: (data.tool_name as string) || "unknown",
+        status: "started",
+        args: data.args as string | undefined,
+        created_at: event.created_at || new Date().toISOString(),
+      };
+      set((s) => ({
+        toolCallEvents: [...s.toolCallEvents, toolEvent],
+      }));
+      return;
+    }
+
+    if (event.type === "tool.call_completed") {
+      const data = event.data as Record<string, unknown>;
+      const toolName = (data.tool_name as string) || "unknown";
+      set((s) => ({
+        toolCallEvents: s.toolCallEvents.map((evt) =>
+          evt.tool_name === toolName && evt.status === "started"
+            ? { ...evt, status: "completed" as const, summary: (data.summary as string) || "Done" }
+            : evt,
+        ),
+      }));
+      return;
+    }
+
+    // Handle streaming delta events (Phase 9: real-time token streaming)
+    if (event.type === "agent.streaming_delta") {
+      const data = event.data as Record<string, unknown>;
+      const deltaText = (data.delta_text as string) ?? "";
+      const done = (data.done as boolean) ?? false;
+      const agentId = (data.agent_id as string) ?? event.actor_id ?? "";
+
+      if (done) {
+        // Stream complete — remove from streamingMessages.
+        // The final complete message will arrive as a normal "message" event.
+        set((s) => {
+          const { [agentId]: _, ...rest } = s.streamingMessages;
+          return { streamingMessages: rest };
+        });
+        return;
+      }
+
+      // Append delta to accumulated content
+      set((s) => {
+        const existing = s.streamingMessages[agentId];
+        const updated: StreamingMessage = existing
+          ? { ...existing, content: existing.content + deltaText }
+          : {
+              agent_id: agentId,
+              agent_name: agentId, // Resolved in component layer via agent store
+              subtask_id: event.subtask_id ?? "",
+              content: deltaText,
+              started_at: new Date().toISOString(),
+            };
+
+        return {
+          streamingMessages: { ...s.streamingMessages, [agentId]: updated },
+        };
+      });
+
+      // Auto-clear safety timeout (60s) in case done event is lost (T-09-07 mitigation)
+      setTimeout(() => {
+        set((s) => {
+          if (s.streamingMessages[agentId]) {
+            const { [agentId]: _, ...rest } = s.streamingMessages;
+            return { streamingMessages: rest };
+          }
+          return s;
+        });
+      }, 60000);
+      return;
     }
 
     // Add messages from message events (deduplicate by message_id)
@@ -239,16 +379,74 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
           const msg: Message = {
             id: msgId,
             task_id: get().currentTask?.id ?? "",
-            sender_type: (data.sender_type as Message["sender_type"]) ?? "system",
-            sender_id: data.sender_id as string | undefined,
+            conversation_id: (data.conversation_id as string) ?? "",
+            // sender_type: prefer data.sender_type, fallback to event.actor_type
+            sender_type: (data.sender_type as Message["sender_type"])
+              ?? (event.actor_type as Message["sender_type"])
+              ?? "system",
+            sender_id: (data.sender_id as string | undefined) ?? event.actor_id,
             sender_name: (data.sender_name as string) ?? "Unknown",
             content: data.content as string,
             mentions: (data.mentions as string[]) ?? [],
-            created_at: (data.created_at as string) ?? new Date().toISOString(),
+            metadata: data.metadata as Record<string, unknown> | undefined,
+            created_at: (data.created_at as string) ?? event.created_at ?? new Date().toISOString(),
           };
+          // Belt-and-suspenders: clear any streaming buffer for this sender
+          const senderId = (data.sender_id as string) ?? "";
+          if (senderId && s.streamingMessages[senderId]) {
+            const { [senderId]: _, ...rest } = s.streamingMessages;
+            return { messages: [...s.messages, msg], streamingMessages: rest };
+          }
           return { messages: [...s.messages, msg] };
         });
       }
+    }
+
+    // Handle advisory typing indicators (D-07, D-09)
+    if (event.type === "agent.typing") {
+      const data = event.data as Record<string, unknown>;
+      const agentId = data.agent_id as string;
+      const agentName = data.agent_name as string;
+      if (agentId && agentName) {
+        set((s) => ({
+          typingAgents: { ...s.typingAgents, [agentId]: agentName },
+        }));
+        // Client-side safety timeout: auto-clear after 65s (slightly longer than backend 60s)
+        // Prevents stuck indicators if agent.typing_stopped event is lost (Pitfall 5)
+        setTimeout(() => {
+          set((s) => {
+            if (s.typingAgents[agentId]) {
+              const { [agentId]: _, ...rest } = s.typingAgents;
+              return { typingAgents: rest };
+            }
+            return s;
+          });
+        }, 65000);
+      }
+    }
+
+    if (event.type === "agent.typing_stopped") {
+      const data = event.data as Record<string, unknown>;
+      const agentId = data.agent_id as string;
+      if (agentId) {
+        set((s) => {
+          const { [agentId]: _, ...rest } = s.typingAgents;
+          return { typingAgents: rest };
+        });
+      }
+    }
+
+    // Handle approval lifecycle events
+    if (event.type === "approval.requested") {
+      set({
+        currentTask: {
+          ...currentTask,
+          status: "approval_required" as Task["status"],
+        },
+      });
+    }
+    if (event.type === "approval.resolved") {
+      void get().selectTask(currentTask.id);
     }
 
     // Update task result when task completes
@@ -260,6 +458,142 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
           result: event.data.result as Record<string, unknown>,
         },
       });
+    }
+  },
+}));
+
+// ─── Dashboard Store ────────────────────────────────────────
+
+type TaskProgress = { completed: number; total: number };
+
+interface DashboardStore {
+  tasks: Task[];
+  totalTasks: number;
+  currentPage: number;
+  totalPages: number;
+  taskProgress: Record<string, TaskProgress>;
+  isLoading: boolean;
+  error: string | null;
+  multiTaskSSEDisconnect: (() => void) | null;
+
+  loadDashboard: (params?: { status?: string; q?: string; page?: number }) => Promise<void>;
+  connectDashboardSSE: (taskIds: string[]) => void;
+  disconnectDashboardSSE: () => void;
+  handleDashboardEvent: (event: TaskEvent) => void;
+}
+
+export const useDashboardStore = create<DashboardStore>((set, get) => ({
+  tasks: [],
+  totalTasks: 0,
+  currentPage: 1,
+  totalPages: 0,
+  taskProgress: {},
+  isLoading: false,
+  error: null,
+  multiTaskSSEDisconnect: null,
+
+  loadDashboard: async (params) => {
+    set({ isLoading: true, error: null });
+    try {
+      const result = await api.tasks.list({
+        ...params,
+        per_page: 12, // UI-SPEC: 12 per page (4 rows × 3 cols)
+      });
+      // Build initial progress map from list response (Plan 01 extended
+      // the query to return completed_subtasks + total_subtasks).
+      const progress: Record<string, TaskProgress> = {};
+      for (const t of result.items) {
+        progress[t.id] = {
+          completed: t.completed_subtasks,
+          total: t.total_subtasks,
+        };
+      }
+      set({
+        tasks: result.items,
+        totalTasks: result.total,
+        currentPage: result.page,
+        totalPages: result.pages,
+        taskProgress: progress,
+        isLoading: false,
+      });
+    } catch (err) {
+      console.error("loadDashboard failed:", err);
+      set({ isLoading: false, error: "Failed to load tasks. Check your connection and try again." });
+    }
+  },
+
+  connectDashboardSSE: (taskIds) => {
+    get().disconnectDashboardSSE();
+    if (taskIds.length === 0) return;
+    const disconnect = connectMultiTaskSSE(taskIds, (event) => {
+      get().handleDashboardEvent(event as unknown as TaskEvent);
+    });
+    set({ multiTaskSSEDisconnect: disconnect });
+  },
+
+  disconnectDashboardSSE: () => {
+    const disconnect = get().multiTaskSSEDisconnect;
+    if (disconnect) {
+      disconnect();
+      set({ multiTaskSSEDisconnect: null });
+    }
+  },
+
+  handleDashboardEvent: (event) => {
+    const taskId = event.task_id;
+    if (!taskId) return;
+
+    // Task-level status updates: patch the task in the list.
+    if (event.type.startsWith("task.")) {
+      const statusMap: Record<string, Task["status"]> = {
+        "task.planning": "planning",
+        "task.running": "running",
+        "task.completed": "completed",
+        "task.failed": "failed",
+        "task.cancelled": "cancelled",
+        "task.approval_required": "approval_required",
+      };
+      const newStatus = statusMap[event.type];
+      if (newStatus) {
+        set((s) => ({
+          tasks: s.tasks.map((t) =>
+            t.id === taskId ? { ...t, status: newStatus } : t,
+          ),
+        }));
+      }
+      return;
+    }
+
+    // Subtask-level updates: maintain the progress map deltas.
+    // Per research recommendation 4: subtask.completed AND subtask.failed
+    // both count toward the progress bar's "completed" denominator because
+    // they are both finalized states.
+    if (event.type === "subtask.created") {
+      set((s) => {
+        const cur = s.taskProgress[taskId] ?? { completed: 0, total: 0 };
+        return {
+          taskProgress: {
+            ...s.taskProgress,
+            [taskId]: { completed: cur.completed, total: cur.total + 1 },
+          },
+        };
+      });
+      return;
+    }
+    if (event.type === "subtask.completed" || event.type === "subtask.failed") {
+      set((s) => {
+        const cur = s.taskProgress[taskId];
+        if (!cur) return s;
+        // Cap completed at total to avoid visual > 100% if SSE outruns list.
+        const nextCompleted = Math.min(cur.completed + 1, cur.total);
+        return {
+          taskProgress: {
+            ...s.taskProgress,
+            [taskId]: { completed: nextCompleted, total: cur.total },
+          },
+        };
+      });
+      return;
     }
   },
 }));

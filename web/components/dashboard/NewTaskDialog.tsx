@@ -1,25 +1,33 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { Plus, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useTaskStore } from "@/lib/store";
+import { useToast } from "@/components/ui/toast";
+import { api } from "@/lib/api";
+import type { WorkflowTemplate } from "@/lib/types";
 
-interface NewTaskDialogProps {
-  orgId: string;
-}
-
-export function NewTaskDialog({ orgId }: NewTaskDialogProps) {
+export function NewTaskDialog() {
   const [open, setOpen] = useState(false);
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
+  const [templateId, setTemplateId] = useState("");
+  const [templates, setTemplates] = useState<WorkflowTemplate[]>([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const createTask = useTaskStore((s) => s.createTask);
   const router = useRouter();
+  const { addToast } = useToast();
+
+  useEffect(() => {
+    if (open) {
+      api.templates.list().then(setTemplates).catch(() => setTemplates([]));
+    }
+  }, [open]);
 
   const handleSubmit = useCallback(
     async (e: React.FormEvent) => {
@@ -30,20 +38,27 @@ export function NewTaskDialog({ orgId }: NewTaskDialogProps) {
       setError(null);
 
       try {
-        const task = await createTask(orgId, title.trim(), description.trim());
+        const task = await createTask(
+          title.trim(),
+          description.trim(),
+          templateId || undefined,
+        );
         setOpen(false);
         setTitle("");
         setDescription("");
+        setTemplateId("");
+        addToast("success", `Task "${title.trim()}" created`);
         router.push(`/tasks/${task.id}`);
       } catch (err) {
-        setError(
-          err instanceof Error ? err.message : "Failed to create task",
-        );
+        const msg =
+          err instanceof Error ? err.message : "Failed to create task";
+        setError(msg);
+        addToast("error", msg);
       } finally {
         setIsSubmitting(false);
       }
     },
-    [title, description, orgId, createTask, router],
+    [title, description, templateId, createTask, router, addToast],
   );
 
   return (
@@ -106,6 +121,34 @@ export function NewTaskDialog({ orgId }: NewTaskDialogProps) {
                   className="w-full rounded-lg border border-input bg-transparent px-2.5 py-2 text-sm transition-colors placeholder:text-muted-foreground focus-visible:border-ring focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 dark:bg-input/30"
                 />
               </div>
+
+              {templates.length > 0 && (
+                <div className="space-y-2">
+                  <label
+                    htmlFor="task-template"
+                    className="text-sm font-medium text-card-foreground"
+                  >
+                    Template (optional)
+                  </label>
+                  <select
+                    id="task-template"
+                    value={templateId}
+                    onChange={(e) => setTemplateId(e.target.value)}
+                    className="w-full rounded-lg border border-input bg-transparent px-2.5 py-2 text-sm transition-colors focus-visible:border-ring focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 dark:bg-input/30"
+                  >
+                    <option value="" className="bg-card">
+                      No template
+                    </option>
+                    {templates
+                      .filter((t) => t.is_active)
+                      .map((t) => (
+                        <option key={t.id} value={t.id} className="bg-card">
+                          {t.name} (v{t.version})
+                        </option>
+                      ))}
+                  </select>
+                </div>
+              )}
 
               {error && (
                 <p className="text-sm text-destructive">{error}</p>

@@ -2,13 +2,16 @@ package auth
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"taskhub/internal/ctxutil"
 	"taskhub/internal/httputil"
 	"taskhub/internal/models"
 )
@@ -58,6 +61,81 @@ func (h *Handler) Logout(w http.ResponseWriter, r *http.Request) {
 		SameSite: http.SameSiteLaxMode,
 	})
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// SimpleLogin handles POST /api/auth/login.
+// MVP: email-only login (no password). Creates user if not exists.
+func (h *Handler) SimpleLogin(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Email string `json:"email"`
+		Name  string `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		httputil.JSONError(w, "invalid body", http.StatusBadRequest)
+		return
+	}
+
+	req.Email = strings.TrimSpace(req.Email)
+	if req.Email == "" {
+		httputil.JSONError(w, "email is required", http.StatusBadRequest)
+		return
+	}
+
+	if req.Name == "" {
+		parts := strings.Split(req.Email, "@")
+		req.Name = parts[0]
+	}
+
+	// Find or create user
+	var userID string
+	err := h.DB.QueryRow(r.Context(),
+		`SELECT id FROM users WHERE email = $1`, req.Email).Scan(&userID)
+	if err != nil {
+		// Create new user
+		userID = uuid.New().String()
+		_, err = h.DB.Exec(r.Context(),
+			`INSERT INTO users (id, email, name, auth_provider, created_at)
+			 VALUES ($1, $2, $3, 'email', NOW())`,
+			userID, req.Email, req.Name)
+		if err != nil {
+			httputil.JSONError(w, "could not create user", http.StatusInternalServerError)
+			return
+		}
+	}
+
+	// Create session
+	sessionID, err := h.Sessions.Create(r.Context(), userID)
+	if err != nil {
+		httputil.JSONError(w, "could not create session", http.StatusInternalServerError)
+		return
+	}
+
+	http.SetCookie(w, &http.Cookie{
+		Name:     sessionCookieName,
+		Value:    sessionID,
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   86400 * 7, // 7 days
+	})
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"status":  "ok",
+		"user_id": userID,
+	})
+}
+
+// GetMe handles GET /api/auth/me.
+// Returns the current authenticated user.
+func (h *Handler) GetMe(w http.ResponseWriter, r *http.Request) {
+	user := ctxutil.UserFromCtx(r.Context())
+	if user == nil {
+		httputil.JSONError(w, "not authenticated", http.StatusUnauthorized)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(user)
 }
 
 // upsertUser creates a user if they don't exist, or returns the existing one.

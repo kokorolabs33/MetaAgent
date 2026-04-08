@@ -1,14 +1,16 @@
 "use client";
 
-import { useEffect, useMemo, useState, useCallback } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { ArrowLeft, Loader2, Trash2 } from "lucide-react";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { api } from "@/lib/api";
-import { useOrgStore, useAgentStore } from "@/lib/store";
-import type { Agent } from "@/lib/types";
+import { useAgentStore } from "@/lib/store";
+import { useToast } from "@/components/ui/toast";
+import { AgentStatusDot } from "@/components/agent/AgentStatusDot";
+import type { Agent, AgentActivityStatus } from "@/lib/types";
 
 const statusConfig: Record<
   Agent["status"],
@@ -28,13 +30,9 @@ export default function AgentDetailPage() {
   const router = useRouter();
   const agentId = params.id as string;
 
-  const { orgs, loadOrgs } = useOrgStore();
   const { deleteAgent } = useAgentStore();
-
-  const orgId = useMemo(
-    () => (orgs.length > 0 ? orgs[0].id : null),
-    [orgs],
-  );
+  const agentStatus = useAgentStore((s) => s.agentStatuses[agentId] ?? "unknown") as AgentActivityStatus;
+  const { addToast } = useToast();
 
   const [agent, setAgent] = useState<Agent | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -42,22 +40,13 @@ export default function AgentDetailPage() {
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Load orgs if needed
-  useEffect(() => {
-    if (orgs.length === 0) {
-      loadOrgs();
-    }
-  }, [orgs.length, loadOrgs]);
-
   // Load agent detail
   useEffect(() => {
-    if (!orgId) return;
-
     const load = async () => {
       setIsLoading(true);
       setError(null);
       try {
-        const data = await api.agents.get(orgId, agentId);
+        const data = await api.agents.get(agentId);
         setAgent(data);
       } catch (err) {
         setError(
@@ -69,22 +58,24 @@ export default function AgentDetailPage() {
     };
 
     void load();
-  }, [orgId, agentId]);
+  }, [agentId]);
 
   const handleDelete = useCallback(async () => {
-    if (!orgId || isDeleting) return;
+    if (isDeleting) return;
     setIsDeleting(true);
     try {
-      await deleteAgent(orgId, agentId);
+      await deleteAgent(agentId);
+      addToast("info", `Agent "${agent?.name ?? agentId}" deleted`);
       router.push("/agents");
     } catch (err) {
-      setError(
-        err instanceof Error ? err.message : "Failed to delete agent",
-      );
+      const msg =
+        err instanceof Error ? err.message : "Failed to delete agent";
+      setError(msg);
+      addToast("error", msg);
       setIsDeleting(false);
       setShowDeleteConfirm(false);
     }
-  }, [orgId, agentId, deleteAgent, router, isDeleting]);
+  }, [agentId, agent?.name, deleteAgent, router, isDeleting, addToast]);
 
   if (isLoading || !agent) {
     return (
@@ -119,6 +110,7 @@ export default function AgentDetailPage() {
           >
             <ArrowLeft className="size-5" />
           </Link>
+          <AgentStatusDot status={agentStatus} size="md" />
           <h1 className="truncate text-lg font-semibold text-foreground">
             {agent.name}
           </h1>
@@ -144,26 +136,69 @@ export default function AgentDetailPage() {
           <DetailRow label="Name" value={agent.name} />
           <DetailRow label="Description" value={agent.description || "---"} />
           <DetailRow label="Endpoint" value={agent.endpoint} mono />
-          <DetailRow
-            label="Adapter Type"
-            value={agent.adapter_type === "http_poll" ? "HTTP Poll" : "Native"}
-          />
-          <DetailRow label="Auth Type" value={agent.auth_type} />
+          <DetailRow label="Agent Card URL" value={agent.agent_card_url} mono />
           <DetailRow label="Version" value={agent.version || "---"} />
 
+          {/* Skills */}
           <div className="space-y-1">
             <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-              Capabilities
+              Skills
+            </span>
+            {(() => {
+              const skills = agent.skills ?? [];
+              if (skills.length === 0) {
+                return <span className="text-sm text-muted-foreground">No skills discovered</span>;
+              }
+              return (
+                <div className="space-y-2">
+                  {skills.map((skill) => (
+                    <div key={skill.id} className="rounded-lg border border-border bg-secondary/30 px-3 py-2">
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-medium text-foreground">{skill.name}</span>
+                        <span className="text-[10px] text-muted-foreground font-mono">{skill.id}</span>
+                      </div>
+                      {skill.description && (
+                        <p className="mt-0.5 text-xs text-muted-foreground">{skill.description}</p>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              );
+            })()}
+          </div>
+
+          {/* Capabilities */}
+          <div className="space-y-1">
+            <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+              Protocol Capabilities
             </span>
             <div className="flex flex-wrap gap-1.5">
-              {agent.capabilities.length > 0 ? (
-                agent.capabilities.map((cap) => (
+              {(agent.capabilities ?? []).length > 0 ? (
+                (agent.capabilities ?? []).map((cap) => (
                   <Badge key={cap} variant="secondary" className="text-xs">
                     {cap}
                   </Badge>
                 ))
               ) : (
-                <span className="text-sm text-muted-foreground">None</span>
+                <span className="text-sm text-muted-foreground">None (no streaming or push notifications)</span>
+              )}
+            </div>
+          </div>
+
+          {/* Health status */}
+          <div className="space-y-1">
+            <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+              Health
+            </span>
+            <div className="flex items-center gap-3">
+              <div className="flex items-center gap-1.5">
+                <span className={`inline-block size-2 rounded-full ${agent.is_online ? "bg-green-500" : "bg-red-500"}`} />
+                <span className="text-sm text-foreground">{agent.is_online ? "Online" : "Offline"}</span>
+              </div>
+              {agent.last_health_check && (
+                <span className="text-xs text-muted-foreground">
+                  Last check: {formatDate(agent.last_health_check)}
+                </span>
               )}
             </div>
           </div>
